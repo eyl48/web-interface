@@ -3,12 +3,11 @@
 
   let currentPage = "Simulator";
 
-  // State variables for ALL available options (fetched from backend)
+  // Available from backend
   let allSolvers = [];
   let allProblems = [];
 
-  // State variables for the CURRENTLY selected solvers and problems.
-  // These are now empty by default and will be populated on mount.
+  // Selected solver/problem blocks
   let solvers = [];
   let problems = [];
 
@@ -20,21 +19,43 @@
     currentPage = page;
   }
 
-  // Adds a new solver block to the UI
-  function addSolver() {
-    if (allSolvers.length > 0) {
-      solvers = [...solvers, { id: solvers.length, name: allSolvers[0] }];
-    } else {
-      console.error('No solvers available to add.');
+  // --- Backend helpers ---
+  async function fetchSolverParams(name) {
+    try {
+      const res = await fetch(`http://localhost:8000/solver_params/${encodeURIComponent(name)}`);
+      const data = await res.json();
+      return data.parameters || [];
+    } catch (err) {
+      console.error("Error fetching solver params:", err);
+      return [];
     }
   }
 
-  // Adds a new problem block to the UI
-  function addProblem() {
+  async function fetchProblemParams(name) {
+    try {
+      const res = await fetch(`http://localhost:8000/problem_params/${encodeURIComponent(name)}`);
+      const data = await res.json();
+      return data.parameters || [];
+    } catch (err) {
+      console.error("Error fetching problem params:", err);
+      return [];
+    }
+  }
+
+  // --- Actions ---
+  async function addSolver() {
+    if (allSolvers.length > 0) {
+      const name = allSolvers[0];
+      const params = await fetchSolverParams(name);
+      solvers = [...solvers, { id: solvers.length, name, params }];
+    }
+  }
+
+  async function addProblem() {
     if (allProblems.length > 0) {
-      problems = [...problems, { id: problems.length, name: allProblems[0] }];
-    } else {
-      console.error('No problems available to add.');
+      const name = allProblems[0];
+      const params = await fetchProblemParams(name);
+      problems = [...problems, { id: problems.length, name, params }];
     }
   }
 
@@ -46,40 +67,33 @@
     problems = problems.filter((_, i) => i !== index);
   }
 
-  // Use the onMount lifecycle function to fetch data when the component loads.
+  // --- Initialize on mount ---
   onMount(async () => {
     try {
-      // Fetch the list of solvers from your backend API
       const solversResponse = await fetch('http://localhost:8000/solvers');
-      const solversData = await solversResponse.json();
-      allSolvers = solversData.solvers;
-
-      // Initialize the 'solvers' array with the first fetched item
+      allSolvers = (await solversResponse.json()).solvers;
       if (allSolvers.length > 0) {
-        solvers = [{ id: 0, name: allSolvers[0] }];
+        const params = await fetchSolverParams(allSolvers[0]);
+        solvers = [{ id: 0, name: allSolvers[0], params }];
       }
-
-    } catch (error) {
-      console.error('Error fetching solvers:', error);
+    } catch (err) {
+      console.error("Error fetching solvers:", err);
     }
 
     try {
-      // Fetch the list of problems from your backend API
       const problemsResponse = await fetch('http://localhost:8000/problems');
-      const problemsData = await problemsResponse.json();
-      allProblems = problemsData.problems;
-
-      // Initialize the 'problems' array with the first fetched item
+      allProblems = (await problemsResponse.json()).problems;
       if (allProblems.length > 0) {
-        problems = [{ id: 0, name: allProblems[0] }];
+        const params = await fetchProblemParams(allProblems[0]);
+        problems = [{ id: 0, name: allProblems[0], params }];
       }
-      
-    } catch (error) {
-      console.error('Error fetching problems:', error);
+    } catch (err) {
+      console.error("Error fetching problems:", err);
     }
   });
 </script>
 
+<!-- NAVBAR -->
 <nav>
   <div class="nav-left">
     <span class="title">SimOpt Web Interface</span>
@@ -102,12 +116,15 @@
 <main>
   {#if currentPage === "Simulator"}
     <div class="row-3col">
+      <!-- Solvers -->
       <div class="card column">
         <h2>Choose Solver</h2>
         {#each solvers as solver, i}
           <div class="solver-block">
             <div class="block-header">
-              <select bind:value={solver.name}>
+              <select
+                bind:value={solver.name}
+                on:change={async e => solver.params = await fetchSolverParams(e.target.value)}>
                 {#each allSolvers as option}
                   <option>{option}</option>
                 {/each}
@@ -118,21 +135,31 @@
             </div>
             <div class="param-box">
               <p class="param-title">Solver Parameters</p>
-              <label><input type="checkbox" /> Solver Param 1</label><br />
-              <label><input type="checkbox" /> Solver Param 2</label><br />
-              <label><input type="checkbox" /> Solver Param 3</label>
+              {#if solver.params && solver.params.length > 0}
+                {#each solver.params as param}
+                  <label>
+                    {param.name}:
+                    <input type="text" bind:value={param.default} placeholder="Enter value" />
+                  </label><br />
+                {/each}
+              {:else}
+                <p>No parameters available</p>
+              {/if}
             </div>
           </div>
         {/each}
         <button class="secondary-outline" on:click={addSolver}>+ Add Solver</button>
       </div>
 
+      <!-- Problems -->
       <div class="card column">
         <h2>Choose Problem</h2>
         {#each problems as problem, i}
           <div class="problem-block">
             <div class="block-header">
-              <select bind:value={problem.name}>
+              <select
+                bind:value={problem.name}
+                on:change={async e => problem.params = await fetchProblemParams(e.target.value)}>
                 {#each allProblems as option}
                   <option>{option}</option>
                 {/each}
@@ -143,32 +170,53 @@
             </div>
             <div class="param-box">
               <p class="param-title">Problem Parameters</p>
-              <label><input type="checkbox" /> Problem Param 1</label><br />
-              <label><input type="checkbox" /> Problem Param 2</label><br />
-              <label><input type="checkbox" /> Problem Param 3</label>
+              {#if problem.params && problem.params.length > 0}
+                {#each problem.params as param}
+                  <label>
+                    {param.name}:
+                    <input type="text" bind:value={param.default} placeholder="Enter value" />
+                  </label><br />
+                {/each}
+              {:else}
+                <p>No parameters available</p>
+              {/if}
             </div>
           </div>
         {/each}
         <button class="secondary-outline" on:click={addProblem}>+ Add Problem</button>
       </div>
 
+      <!-- Summary -->
       <div class="summary card">
         <h3>Summary</h3>
         <p><strong>Solvers:</strong></p>
         <ul>
           {#each solvers as solver}
-            <li>{solver.name}</li>
+            <li>{solver.name}
+              <ul>
+                {#each solver.params as param}
+                  <li>{param.name}: {param.default}</li>
+                {/each}
+              </ul>
+            </li>
           {/each}
         </ul>
         <p><strong>Problems:</strong></p>
         <ul>
           {#each problems as problem}
-            <li>{problem.name}</li>
+            <li>{problem.name}
+              <ul>
+                {#each problem.params as param}
+                  <li>{param.name}: {param.default}</li>
+                {/each}
+              </ul>
+            </li>
           {/each}
         </ul>
       </div>
     </div>
 
+    <!-- Other controls -->
     <div class="card section">
       <label>Number of Macroreplications</label><br />
       <input type="number" value="10" />
@@ -234,19 +282,19 @@
   }
 
   .nav-left {
-    flex-shrink: 0; /* don't shrink title */
+    flex-shrink: 0;
   }
 
   .title {
-    font-size: 2rem;        /* make it bigger again */
+    font-size: 2rem;
     font-weight: 700;
     color: #0f172a;
-    white-space: nowrap;    /* prevent wrapping */
+    white-space: nowrap;
   }
 
   .nav-right ul {
     display: flex;
-    gap: 1.25rem; /* tighter spacing */
+    gap: 1.25rem;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -261,10 +309,9 @@
 
   .nav-right li.active {
     color: #0f172a;
-    border-bottom: 2px solid #14b8a6; /* teal accent underline */
+    border-bottom: 2px solid #14b8a6;
   }
 
-  /* CONTENT */
   main {
     font-family: 'Inter', sans-serif;
     margin: 100px 20px 20px;
@@ -280,17 +327,12 @@
 
   .row-3col {
     display: grid;
-    grid-template-columns: 1fr 1fr 0.6fr; /* smaller summary column */
+    grid-template-columns: 1fr 1fr 0.6fr;
     gap: 2rem;
     margin-bottom: 1.5rem;
     align-items: flex-start;
   }
 
-  .column {
-    flex: 1;
-  }
-
-  /* Card Styling */
   .card {
     background: #ffffff;
     padding: 1rem;
@@ -318,12 +360,14 @@
     line-height: 1;
     color: #6b7280;
   }
+
   .remove-btn:hover {
     color: #111827;
   }
 
   select,
-  input[type="number"] {
+  input[type="number"],
+  input[type="text"] {
     margin: 0.5rem 0;
     padding: 0.5rem;
     width: 100%;
@@ -347,7 +391,6 @@
     color: #1d4ed8;
   }
 
-  /* Buttons */
   button {
     font-size: 15px;
     font-weight: 500;
@@ -363,6 +406,7 @@
     border: none;
     font-size: 16px;
   }
+
   .cta:hover {
     background-color: #1e40af;
   }
@@ -374,6 +418,7 @@
     padding: 0.4rem 0.8rem;
     margin-top: 0.5rem;
   }
+
   .secondary-outline:hover {
     background: #eff6ff;
   }
@@ -384,7 +429,6 @@
     margin: 1rem 0;
   }
 
-  /* Dropdowns */
   .dropdown-row {
     margin-top: 2rem;
     display: flex;
@@ -395,21 +439,21 @@
     flex: 1;
   }
 
-.dropdown {
-  background: #d0e2ff;    /* your chosen color */
-  color: #1e3a8a;          /* dark blue text */
-  padding: 0.6rem 1rem;
-  border-radius: 6px;
-  border: 1px solid #a6c8ff; /* subtle border */
-  width: 100%;
-  font-weight: 500;
-  cursor: pointer;
-  text-align: left;
-}
+  .dropdown {
+    background: #d0e2ff;
+    color: #1e3a8a;
+    padding: 0.6rem 1rem;
+    border-radius: 6px;
+    border: 1px solid #a6c8ff;
+    width: 100%;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+  }
 
-.dropdown:hover {
-  background: #a6c8ff;  /* darker hover version */
-}
+  .dropdown:hover {
+    background: #a6c8ff;
+  }
 
   .dropdown-content {
     border: 1px solid #c7d2fe;
@@ -419,7 +463,6 @@
     border-radius: 6px;
   }
 
-  /* Summary */
   .summary h3 {
     margin-top: 0;
     color: #0f172a;
