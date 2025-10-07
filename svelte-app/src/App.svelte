@@ -3,11 +3,11 @@
 
   let currentPage = "Simulator";
 
-  // Available from backend
+  const BASE_URL = 'http://localhost:8000';
+
   let allSolvers = [];
   let allProblems = [];
 
-  // Selected solver/problem blocks
   let solvers = [];
   let problems = [];
 
@@ -19,10 +19,9 @@
     currentPage = page;
   }
 
-  // --- Backend helpers ---
-  async function fetchSolverParams(name) {
+  async function fetchSolverParams(solverName) {
     try {
-      const res = await fetch(`http://localhost:8000/solver_params/${encodeURIComponent(name)}`);
+      const res = await fetch(`${BASE_URL}/solver_params/${encodeURIComponent(solverName)}`);
       const data = await res.json();
       return data.parameters || [];
     } catch (err) {
@@ -31,9 +30,9 @@
     }
   }
 
-  async function fetchProblemParams(name) {
+  async function fetchProblemParams(problemName) {
     try {
-      const res = await fetch(`http://localhost:8000/problem_params/${encodeURIComponent(name)}`);
+      const res = await fetch(`${BASE_URL}/problem_params/${encodeURIComponent(problemName)}`);
       const data = await res.json();
       return data.parameters || [];
     } catch (err) {
@@ -42,21 +41,32 @@
     }
   }
 
-  // --- Actions ---
   async function addSolver() {
     if (allSolvers.length > 0) {
-      const name = allSolvers[0];
-      const params = await fetchSolverParams(name);
-      solvers = [...solvers, { id: solvers.length, name, params }];
+      const defaultSolver = allSolvers[0];
+      const params = await fetchSolverParams(defaultSolver);
+      solvers = [...solvers, { id: solvers.length, name: defaultSolver, params }];
     }
   }
 
   async function addProblem() {
     if (allProblems.length > 0) {
-      const name = allProblems[0];
-      const params = await fetchProblemParams(name);
-      problems = [...problems, { id: problems.length, name, params }];
+      const defaultProblem = allProblems[0];
+      const params = await fetchProblemParams(defaultProblem);
+      problems = [...problems, { id: problems.length, name: defaultProblem, params }];
     }
+  }
+
+  async function updateSolverParams(index, solverName) {
+    const params = await fetchSolverParams(solverName);
+    solvers[index] = { ...solvers[index], name: solverName, params };
+    solvers = [...solvers];
+  }
+
+  async function updateProblemParams(index, problemName) {
+    const params = await fetchProblemParams(problemName);
+    problems[index] = { ...problems[index], name: problemName, params };
+    problems = [...problems];
   }
 
   function removeSolver(index) {
@@ -67,28 +77,28 @@
     problems = problems.filter((_, i) => i !== index);
   }
 
-  // --- Initialize on mount ---
+  // Initialize solvers/problems on page load
   onMount(async () => {
     try {
-      const solversResponse = await fetch('http://localhost:8000/solvers');
-      allSolvers = (await solversResponse.json()).solvers;
+      const solverRes = await fetch(`${BASE_URL}/solvers`);
+      const solverData = await solverRes.json();
+      allSolvers = solverData.solvers;
+
+      const problemRes = await fetch(`${BASE_URL}/problems`);
+      const problemData = await problemRes.json();
+      allProblems = problemData.problems;
+
       if (allSolvers.length > 0) {
         const params = await fetchSolverParams(allSolvers[0]);
         solvers = [{ id: 0, name: allSolvers[0], params }];
       }
-    } catch (err) {
-      console.error("Error fetching solvers:", err);
-    }
 
-    try {
-      const problemsResponse = await fetch('http://localhost:8000/problems');
-      allProblems = (await problemsResponse.json()).problems;
       if (allProblems.length > 0) {
         const params = await fetchProblemParams(allProblems[0]);
         problems = [{ id: 0, name: allProblems[0], params }];
       }
-    } catch (err) {
-      console.error("Error fetching problems:", err);
+    } catch (error) {
+      console.error("Error initializing:", error);
     }
   });
 </script>
