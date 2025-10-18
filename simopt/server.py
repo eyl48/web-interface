@@ -1,9 +1,11 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from simopt.directory import (
     problem_unabbreviated_directory,
     solver_unabbreviated_directory,
 )
+from simopt.experiment_base import ProblemsSolvers
+from simopt.directory import solver_directory, problem_directory
 import inspect
 
 app = FastAPI(title="SimOpt API")
@@ -98,3 +100,37 @@ def get_problem_params(problem_name: str):
             pass
 
     return {"parameters": params}
+
+
+@app.post("/check_compatibility")
+def check_compatibility(payload: dict):
+    solvers = payload.get("solvers", [])
+    problems = payload.get("problems", [])
+
+    compatibility = {}
+
+    for solver_name in solvers:
+        solver_cls = solver_unabbreviated_directory.get(solver_name)
+        if not solver_cls:
+            continue
+        solver = solver_cls()
+        compatibility[solver_name] = {}
+
+        for problem_name in problems:
+            problem_cls = problem_unabbreviated_directory.get(problem_name)
+            if not problem_cls:
+                continue
+            problem = problem_cls()
+
+            # --- Create temporary experiment ---
+            try:
+                exp = ProblemsSolvers(solvers=[solver], problems=[problem])
+                err = exp.check_compatibility()
+                if err.strip() == "":
+                    compatibility[solver_name][problem_name] = {"compatible": True, "message": ""}
+                else:
+                    compatibility[solver_name][problem_name] = {"compatible": False, "message": err}
+            except Exception as e:
+                compatibility[solver_name][problem_name] = {"compatible": False, "message": str(e)}
+
+    return {"compatibility": compatibility}

@@ -84,6 +84,35 @@
       console.error("Error fetching problems:", err);
     }
   });
+
+  let compatibility = {}; // stores compatibility matrix
+
+  async function checkCompatibility() {
+    if (solvers.length === 0 || problems.length === 0) {
+      compatibility = {};
+      return;
+    }
+
+    const payload = {
+      solvers: solvers.map((s) => s.name),
+      problems: problems.map((p) => p.name)
+    };
+
+    try {
+      const res = await fetch("http://localhost:8000/check_compatibility", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      compatibility = data.compatibility || {};
+    } catch (err) {
+      console.error("Error checking compatibility:", err);
+    }
+  }
+
+  // Re-run check when solvers/problems change
+  $: checkCompatibility(solvers, problems);
 </script>
 
 <nav>
@@ -236,6 +265,46 @@
           {/each}
         </div>
       </div>
+
+      {#if Object.keys(compatibility).length > 0}
+        <div class="card compatibility-section">
+          <h3>Compatibility Matrix</h3>
+          <table class="compatibility-table">
+            <thead>
+              <tr>
+                <th></th>
+                {#each problems as p}
+                  <th>{p.name}</th>
+                {/each}
+              </tr>
+            </thead>
+            <tbody>
+              {#each solvers as s}
+                <tr>
+                  <td class="solver-name">{s.name}</td>
+                  {#each problems as p}
+                    <td>
+                      {#if compatibility[s.name] && compatibility[s.name][p.name]?.compatible}
+                        <span class="check">✅</span>
+                      {:else}
+                        <span class="cross-wrapper">
+                          <span class="cross">❌</span>
+                          {#if compatibility[s.name] && compatibility[s.name][p.name]?.message}
+                            <div class="tooltip">
+                              <strong>{s.name}</strong> × <strong>{p.name}</strong><br />
+                              {compatibility[s.name][p.name].message}
+                            </div>
+                          {/if}
+                        </span>
+                      {/if}
+                    </td>
+                  {/each}
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
     </div>
 
     <!-- === Additional Controls === -->
@@ -448,6 +517,8 @@
     padding: 0.75rem 1rem;
     border-radius: 6px;
     margin-top: 0.5rem;
+    position: relative;
+    overflow: visible !important; /* ensure tooltips aren’t cut off */
   }
 
   .param-title {
@@ -456,19 +527,28 @@
     color: #1d4ed8;
   }
 
+  /* Label row layout */
   .param-box label {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    gap: 0.75rem;
+    justify-content: flex-start; /* keep items grouped together */
+    gap: 0.5rem; /* closer spacing between label and input */
     margin-bottom: 0.4rem;
   }
 
+  /* Label text */
+  .param-box label span {
+    flex: 0 0 140px; /* ensures nice left column width */
+    text-align: left;
+  }
+
+  /* Input box */
   .param-box input[type="text"],
   .param-box input[type="number"] {
-    flex: 0 0 130px;
+    flex: 1;
+    max-width: 160px; /* keeps right edge aligned */
     text-align: right;
-    margin: 0;
+    margin-left: auto; /* pushes input to the right */
   }
 
   /* === BUTTONS === */
@@ -613,6 +693,97 @@
   .param-box {
     position: relative;
     overflow: visible !important;
+  }
+
+/* === COMPATIBILITY MATRIX === */
+  .compatibility-section {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fafafa;
+  }
+
+  .compatibility-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0.75rem;
+    text-align: center;
+  }
+
+  .compatibility-table th,
+  .compatibility-table td {
+    border: 1px solid #d1d5db;
+    padding: 0.5rem;
+  }
+
+  .compatibility-table th {
+    background: #dbeafe;
+    color: #1e3a8a;
+    font-weight: 600;
+  }
+
+  .solver-name {
+    font-weight: 500;
+    background: #eff6ff;
+    text-align: left;
+    padding-left: 0.75rem;
+  }
+
+  .check {
+    color: green;
+    font-size: 1.1rem;
+  }
+
+  .cross {
+    color: red;
+    font-size: 1.1rem;
+  }
+
+  /* === Hover Tooltip for Incompatibility Messages === */
+  .cross-wrapper {
+    position: relative;
+    display: inline-block;
+  }
+
+  .cross-wrapper .tooltip {
+    visibility: hidden;
+    opacity: 0;
+    position: absolute;
+    bottom: 130%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #111827;
+    color: #f9fafb;
+    padding: 0.5rem 0.7rem;
+    border-radius: 6px;
+    white-space: normal;
+    width: max-content;
+    max-width: 300px;
+    font-size: 0.8rem;
+    z-index: 2000;
+    transition: opacity 0.2s ease;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  }
+
+  .cross-wrapper .tooltip strong {
+    color: #93c5fd;
+  }
+
+  .cross-wrapper .tooltip::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border-width: 5px;
+    border-style: solid;
+    border-color: #111827 transparent transparent transparent;
+  }
+
+  .cross-wrapper:hover .tooltip {
+    visibility: visible;
+    opacity: 1;
   }
 </style>
 
