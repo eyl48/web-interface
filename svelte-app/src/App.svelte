@@ -201,12 +201,6 @@
                   {#each solver.params as param}
                     <li>
                       <strong>{param.name}:</strong> {param.default ?? ""}
-                      {#if param.description}
-                        <span class="info-wrapper summary-info" aria-hidden="true">
-                          <span class="info-icon">ℹ</span>
-                          <div class="tooltip">{param.description}</div>
-                        </span>
-                      {/if}
                     </li>
                   {/each}
                 </ul>
@@ -234,12 +228,6 @@
                   {#each problem.params as param}
                     <li>
                       <strong>{param.name}:</strong> {param.default ?? ""}
-                      {#if param.description}
-                        <span class="info-wrapper summary-info" aria-hidden="true">
-                          <span class="info-icon">ℹ</span>
-                          <div class="tooltip">{param.description}</div>
-                        </span>
-                      {/if}
                     </li>
                   {/each}
                 </ul>
@@ -296,7 +284,7 @@
     font-size: 15px;
   }
 
-  /* NAVBAR */
+  /* === NAVBAR === */
   nav {
     background: #e5e7eb;
     display: flex;
@@ -344,6 +332,7 @@
     border-bottom: 2px solid #14b8a6;
   }
 
+  /* === MAIN LAYOUT === */
   main {
     font-family: 'Inter', sans-serif;
     margin: 100px 20px 20px;
@@ -357,22 +346,21 @@
     font-weight: 600;
   }
 
-  /* === Layout Fix === */
+  /* Three-column layout: problems | solvers | summary */
   .row-3col {
     display: grid;
-    grid-template-columns: 0.7fr 0.7fr 0.45fr; /* slightly narrower solver/problem */
-    gap: 1.75rem; /* slightly reduced gap for balance */
+    grid-template-columns: 0.7fr 0.7fr 0.45fr;
+    gap: 1.75rem;
     margin-bottom: 1.5rem;
     align-items: start;
-  } 
+  }
 
-  /* Prevent cards from stretching the grid */
   .row-3col > .card {
     align-self: start;
     min-width: 0;
   }
 
-  /* Summary Panel */
+  /* === SUMMARY PANEL === */
   .summary {
     max-height: 75vh;
     overflow-y: auto;
@@ -404,47 +392,13 @@
     text-overflow: ellipsis;
   }
 
+  /* === CARDS === */
   .card {
     background: #ffffff;
     padding: 1rem;
     border-radius: 8px;
     box-shadow: 0 2px 6px rgba(0,0,0,0.05);
     margin-bottom: 1.5rem;
-  }
-
-  .summary-item {
-    margin-bottom: 0.6rem;
-  }
-
-  .summary-toggle {
-    background: none;
-    border: none;
-    color: #1d4ed8;
-    font-weight: 600;
-    cursor: pointer;
-    text-align: left;
-    width: 100%;
-    padding: 0.25rem 0;
-    transition: color 0.2s ease;
-  }
-
-  .summary-toggle:hover {
-    color: #1e40af;
-  }
-
-  .param-list {
-    list-style: none;
-    padding-left: 1.2rem;
-    margin: 0.25rem 0 0.5rem;
-    color: #374151;
-    font-size: 14px;
-  }
-
-  .param-list li {
-    margin-bottom: 0.2rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .solver-block,
@@ -473,6 +427,7 @@
     color: #111827;
   }
 
+  /* === INPUTS & SELECTS === */
   select,
   input[type="number"],
   input[type="text"] {
@@ -486,21 +441,13 @@
     box-sizing: border-box;
   }
 
+  /* === PARAMETER BOX === */
   .param-box {
     border: 1px solid #93c5fd;
     background: #eff6ff;
     padding: 0.75rem 1rem;
     border-radius: 6px;
     margin-top: 0.5rem;
-  }
-
-  /* Make each parameter row flex and neatly aligned */
-  .param-box .param-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.4rem;
   }
 
   .param-title {
@@ -511,29 +458,20 @@
 
   .param-box label {
     display: flex;
+    justify-content: space-between;
     align-items: center;
+    gap: 0.75rem;
     margin-bottom: 0.4rem;
-  }
-
-  .param-box label span {
-    width: 150px; /* fixed label width — keeps right edges aligned */
-    flex-shrink: 0;
-    text-align: left;
   }
 
   .param-box input[type="text"],
   .param-box input[type="number"] {
-    flex: 1;
-    max-width: 180px; /* adjust as needed */
+    flex: 0 0 130px;
     text-align: right;
-    margin-left: 0.75rem; /* small gap between label and input */
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    padding: 0.35rem 0.5rem;
-    font-size: 14px;
-    box-sizing: border-box;
+    margin: 0;
   }
 
+  /* === BUTTONS === */
   button {
     font-size: 15px;
     font-weight: 500;
@@ -572,6 +510,7 @@
     margin: 1rem 0;
   }
 
+  /* === DROPDOWN SECTIONS === */
   .dropdown-row {
     margin-top: 2rem;
     display: flex;
@@ -606,39 +545,62 @@
     border-radius: 6px;
   }
 
-    /* === Tooltip Styling === */
+  /* === INFO ICON + TOOLTIP (Improved for edge handling) === */
   .info-wrapper {
     position: relative;
     display: inline-block;
-    cursor: help;
+    margin-left: 4px;
+    vertical-align: text-top;
+    z-index: 1000;
   }
 
   .info-icon {
-    font-size: 0.9rem;
+    font-size: 0.8rem;
     color: #2563eb;
     border-radius: 50%;
-    padding: 0 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    background-color: #e0f2fe;
+    border: 1px solid #93c5fd;
+    cursor: help;
+    transform: translateY(-2px);
   }
 
   .tooltip {
-    visibility: hidden;
-    opacity: 0;
-    transition: opacity 0.2s ease;
     position: absolute;
-    bottom: 125%;
-    left: 50%;
-    transform: translateX(-50%);
+    bottom: 130%; /* appear above */
+    left: 0; /* start aligned to the left edge of icon */
+    transform: translateX(-10%); /* small offset */
     background-color: #111827;
     color: #f9fafb;
     text-align: left;
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 0.4rem 0.6rem;
     white-space: normal;
     width: max-content;
-    max-width: 250px;
+    max-width: 280px;
     font-size: 0.8rem;
-    line-height: 1.2;
-    z-index: 1000;
+    line-height: 1.3;
+    z-index: 3000;
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    overflow-wrap: break-word;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  }
+
+  /* Tooltip arrow */
+  .tooltip::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 12px; /* aligns arrow near the icon */
+    border-width: 5px;
+    border-style: solid;
+    border-color: #111827 transparent transparent transparent;
   }
 
   /* Show tooltip on hover */
@@ -647,15 +609,10 @@
     opacity: 1;
   }
 
-  /* Tooltip arrow */
-  .tooltip::after {
-    content: "";
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    border-width: 5px;
-    border-style: solid;
-    border-color: #111827 transparent transparent transparent;
+  /* Prevent clipping */
+  .param-box {
+    position: relative;
+    overflow: visible !important;
   }
 </style>
+
