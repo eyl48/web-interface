@@ -13,6 +13,12 @@
     currentPage = page;
   }
 
+  function abbrev(name) {
+    if (!name) return "";
+    const clean = String(name).replace(/[^A-Za-z0-9]/g, ""); // strip spaces/punct
+    return clean.slice(-4).toUpperCase();                     // last 4, uppercased
+  }
+
   async function fetchSolverParams(name) {
     const res = await fetch(`http://localhost:8000/solver_params/${encodeURIComponent(name)}`);
     const data = await res.json();
@@ -131,7 +137,7 @@
 <main>
   {#if currentPage === "Simulator"}
     <div class="row-3col">
-      <!-- === Choose Solver Section === -->
+      <!-- === Left: Choose Solver === -->
       <div class="card column">
         <h2>Choose Solver</h2>
         {#each solvers as solver, i}
@@ -169,7 +175,7 @@
         <button class="secondary-outline" on:click={addSolver}>+ Add Solver</button>
       </div>
 
-      <!-- === Choose Problem Section === -->
+      <!-- === Middle: Choose Problem === -->
       <div class="card column">
         <h2>Choose Problem</h2>
         {#each problems as problem, i}
@@ -207,107 +213,104 @@
         <button class="secondary-outline" on:click={addProblem}>+ Add Problem</button>
       </div>
 
-      <!-- === Summary Section === -->
-      <div class="summary card">
-        <h3>Summary</h3>
+      <!-- === Right Column: Summary + Compatibility === -->
+      <div class="right-column">
+        <div class="summary card">
+          <h3>Summary</h3>
 
-        <!-- Solvers -->
-        <div class="summary-section">
-          <p><strong>Solvers:</strong></p>
-          {#each solvers as solver, si}
-            <div class="summary-item">
-              <button
-                class="summary-toggle"
-                on:click={() => {
-                  solver.expanded = !solver.expanded;
-                  solvers = [...solvers];
-                }}
-              >
-                {solver.expanded ? "▼" : "▶"} {solver.name}
-              </button>
-              {#if solver.expanded}
-                <ul class="param-list">
-                  {#each solver.params as param}
-                    <li>
-                      <strong>{param.name}:</strong> {param.default ?? ""}
-                    </li>
-                  {/each}
-                </ul>
-              {/if}
-            </div>
-          {/each}
+          <!-- Solvers -->
+          <div class="summary-section">
+            <p><strong>Solvers:</strong></p>
+            {#each solvers as solver}
+              <div class="summary-item">
+                <button
+                  class="summary-toggle"
+                  on:click={() => {
+                    solver.expanded = !solver.expanded;
+                    solvers = [...solvers];
+                  }}
+                >
+                  {solver.expanded ? "▼" : "▶"} {solver.name}
+                </button>
+                {#if solver.expanded}
+                  <ul class="param-list">
+                    {#each solver.params as param}
+                      <li><strong>{param.name}:</strong> {param.default ?? ""}</li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {/each}
+          </div>
+
+          <!-- Problems -->
+          <div class="summary-section">
+            <p><strong>Problems:</strong></p>
+            {#each problems as problem}
+              <div class="summary-item">
+                <button
+                  class="summary-toggle"
+                  on:click={() => {
+                    problem.expanded = !problem.expanded;
+                    problems = [...problems];
+                  }}
+                >
+                  {problem.expanded ? "▼" : "▶"} {problem.name}
+                </button>
+                {#if problem.expanded}
+                  <ul class="param-list">
+                    {#each problem.params as param}
+                      <li><strong>{param.name}:</strong> {param.default ?? ""}</li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {/each}
+          </div>
         </div>
 
-        <!-- Problems -->
-        <div class="summary-section">
-          <p><strong>Problems:</strong></p>
-          {#each problems as problem, pi}
-            <div class="summary-item">
-              <button
-                class="summary-toggle"
-                on:click={() => {
-                  problem.expanded = !problem.expanded;
-                  problems = [...problems];
-                }}
-              >
-                {problem.expanded ? "▼" : "▶"} {problem.name}
-              </button>
-              {#if problem.expanded}
-                <ul class="param-list">
-                  {#each problem.params as param}
-                    <li>
-                      <strong>{param.name}:</strong> {param.default ?? ""}
-                    </li>
-                  {/each}
-                </ul>
-              {/if}
-            </div>
-          {/each}
-        </div>
-      </div>
-
-      {#if Object.keys(compatibility).length > 0}
-        <div class="card compatibility-section">
-          <h3>Compatibility Matrix</h3>
-          <table class="compatibility-table">
-            <thead>
-              <tr>
-                <th></th>
-                {#each problems as p}
-                  <th>{p.name}</th>
-                {/each}
-              </tr>
-            </thead>
-            <tbody>
-              {#each solvers as s}
+        {#if Object.keys(compatibility).length > 0}
+          <div class="card compatibility-section compact">
+            <h3>Compatibility</h3>
+            <table class="compatibility-table compact" aria-label="Solver–Problem compatibility matrix">
+              <thead>
                 <tr>
-                  <td class="solver-name">{s.name}</td>
+                  <th scope="col">S \ P</th>
                   {#each problems as p}
-                    <td>
-                      {#if compatibility[s.name] && compatibility[s.name][p.name]?.compatible}
-                        <span class="check">✅</span>
-                      {:else}
-                        <span class="cross-wrapper">
-                          <span class="cross">❌</span>
-                          {#if compatibility[s.name] && compatibility[s.name][p.name]?.message}
-                            <div class="tooltip">
-                              <strong>{s.name}</strong> × <strong>{p.name}</strong><br />
-                              {compatibility[s.name][p.name].message}
-                            </div>
-                          {/if}
-                        </span>
-                      {/if}
-                    </td>
+                    <th scope="col" title={p.name}>{abbrev(p.name)}</th>
                   {/each}
                 </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-      {/if}
+              </thead>
+              <tbody>
+                {#each solvers as s}
+                  <tr>
+                    <th class="solver-name" scope="row" title={s.name}>{abbrev(s.name)}</th>
+                    {#each problems as p}
+                      <td
+                        class={
+                          compatibility[s.name]?.[p.name]
+                            ? (compatibility[s.name][p.name].compatible ? 'compat-cell ok' : 'compat-cell bad')
+                            : 'compat-cell neutral'
+                        }
+                        title={
+                          compatibility[s.name]?.[p.name] && !compatibility[s.name][p.name].compatible && compatibility[s.name][p.name].message
+                            ? `${s.name} × ${p.name}: ${compatibility[s.name][p.name].message}`
+                            : ''
+                        }
+                      >
+                        &nbsp;
+                      </td>
+                    {/each}
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+      </div>
     </div>
 
-    <!-- === Additional Controls === -->
+    <!-- === Controls under grid === -->
     <div class="card section">
       <label>Number of Macroreplications</label><br />
       <input type="number" value="10" />
@@ -344,7 +347,6 @@
 </main>
 
 
-
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -370,9 +372,7 @@
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
   }
 
-  .nav-left {
-    flex-shrink: 0;
-  }
+  .nav-left { flex-shrink: 0; }
 
   .title {
     font-size: 2rem;
@@ -415,7 +415,7 @@
     font-weight: 600;
   }
 
-  /* Three-column layout: problems | solvers | summary */
+  /* Three-column layout: solvers | problems | right column (summary+compat) */
   .row-3col {
     display: grid;
     grid-template-columns: 0.7fr 0.7fr 0.45fr;
@@ -424,8 +424,13 @@
     align-items: start;
   }
 
-  .row-3col > .card {
-    align-self: start;
+  .row-3col > .card { align-self: start; min-width: 0; }
+
+  /* Right column stacks Summary + Compatibility */
+  .right-column {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
     min-width: 0;
   }
 
@@ -448,10 +453,7 @@
     font-size: 1.1em;
   }
 
-  .summary ul {
-    padding-left: 1rem;
-    margin: 0.25rem 0 1rem;
-  }
+  .summary ul { padding-left: 1rem; margin: 0.25rem 0 1rem; }
 
   .summary li {
     font-size: 14px;
@@ -470,12 +472,7 @@
     margin-bottom: 1.5rem;
   }
 
-  .solver-block,
-  .problem-block {
-    margin-bottom: 1rem;
-    width: 100%;
-    overflow-x: hidden;
-  }
+  .solver-block, .problem-block { margin-bottom: 1rem; width: 100%; overflow-x: hidden; }
 
   .block-header {
     display: flex;
@@ -491,10 +488,7 @@
     line-height: 1;
     color: #6b7280;
   }
-
-  .remove-btn:hover {
-    color: #111827;
-  }
+  .remove-btn:hover { color: #111827; }
 
   /* === INPUTS & SELECTS === */
   select,
@@ -518,7 +512,7 @@
     border-radius: 6px;
     margin-top: 0.5rem;
     position: relative;
-    overflow: visible !important; /* ensure tooltips aren’t cut off */
+    overflow: visible !important; /* tooltips shouldn't be clipped */
   }
 
   .param-title {
@@ -531,24 +525,24 @@
   .param-box label {
     display: flex;
     align-items: center;
-    justify-content: flex-start; /* keep items grouped together */
-    gap: 0.5rem; /* closer spacing between label and input */
+    justify-content: flex-start;
+    gap: 0.5rem; /* tight gap between name and input */
     margin-bottom: 0.4rem;
   }
 
-  /* Label text */
+  /* Label text column */
   .param-box label span {
-    flex: 0 0 140px; /* ensures nice left column width */
+    flex: 0 0 140px; /* tidy left column */
     text-align: left;
   }
 
-  /* Input box */
+  /* Input */
   .param-box input[type="text"],
   .param-box input[type="number"] {
     flex: 1;
-    max-width: 160px; /* keeps right edge aligned */
+    max-width: 200px;   /* longer inputs but still align right edge */
     text-align: right;
-    margin-left: auto; /* pushes input to the right */
+    margin-left: 8px;   /* small space from label */
   }
 
   /* === BUTTONS === */
@@ -567,10 +561,7 @@
     border: none;
     font-size: 16px;
   }
-
-  .cta:hover {
-    background-color: #1e40af;
-  }
+  .cta:hover { background-color: #1e40af; }
 
   .secondary-outline {
     background: white;
@@ -579,27 +570,13 @@
     padding: 0.4rem 0.8rem;
     margin-top: 0.5rem;
   }
+  .secondary-outline:hover { background: #eff6ff; }
 
-  .secondary-outline:hover {
-    background: #eff6ff;
-  }
-
-  .button-row {
-    display: flex;
-    justify-content: flex-start;
-    margin: 1rem 0;
-  }
+  .button-row { display: flex; justify-content: flex-start; margin: 1rem 0; }
 
   /* === DROPDOWN SECTIONS === */
-  .dropdown-row {
-    margin-top: 2rem;
-    display: flex;
-    gap: 1.5rem;
-  }
-
-  .dropdown-container {
-    flex: 1;
-  }
+  .dropdown-row { margin-top: 2rem; display: flex; gap: 1.5rem; }
+  .dropdown-container { flex: 1; }
 
   .dropdown {
     background: #d0e2ff;
@@ -612,10 +589,7 @@
     cursor: pointer;
     text-align: left;
   }
-
-  .dropdown:hover {
-    background: #a6c8ff;
-  }
+  .dropdown:hover { background: #a6c8ff; }
 
   .dropdown-content {
     border: 1px solid #c7d2fe;
@@ -625,7 +599,7 @@
     border-radius: 6px;
   }
 
-  /* === INFO ICON + TOOLTIP (Improved for edge handling) === */
+  /* === INFO ICON + TOOLTIP === */
   .info-wrapper {
     position: relative;
     display: inline-block;
@@ -651,9 +625,9 @@
 
   .tooltip {
     position: absolute;
-    bottom: 130%; /* appear above */
-    left: 0; /* start aligned to the left edge of icon */
-    transform: translateX(-10%); /* small offset */
+    bottom: 130%;
+    left: 0;
+    transform: translateX(-10%);
     background-color: #111827;
     color: #f9fafb;
     text-align: left;
@@ -672,118 +646,65 @@
     box-shadow: 0 2px 8px rgba(0,0,0,0.2);
   }
 
-  /* Tooltip arrow */
   .tooltip::after {
     content: "";
     position: absolute;
     top: 100%;
-    left: 12px; /* aligns arrow near the icon */
+    left: 12px;
     border-width: 5px;
     border-style: solid;
     border-color: #111827 transparent transparent transparent;
   }
 
-  /* Show tooltip on hover */
-  .info-wrapper:hover .tooltip {
-    visibility: visible;
-    opacity: 1;
-  }
+  .info-wrapper:hover .tooltip { visibility: visible; opacity: 1; }
 
-  /* Prevent clipping */
-  .param-box {
-    position: relative;
-    overflow: visible !important;
-  }
-
-/* === COMPATIBILITY MATRIX === */
-  .compatibility-section {
-    margin-top: 1.5rem;
-    padding: 1rem;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    background: #fafafa;
-  }
+  /* === COMPATIBILITY MATRIX (colored cells) === */
+  .compatibility-section { padding: 1rem; border: 1px solid #e5e7eb; border-radius: 8px; background: #fafafa; }
+  .compatibility-section.compact { padding: 0.75rem; }
 
   .compatibility-table {
     width: 100%;
     border-collapse: collapse;
     margin-top: 0.75rem;
     text-align: center;
+    table-layout: fixed;
   }
+  .compatibility-table.compact { font-size: 12px; }
 
   .compatibility-table th,
   .compatibility-table td {
     border: 1px solid #d1d5db;
-    padding: 0.5rem;
+    padding: 0.55rem;
+    font-size: 0.95rem;
   }
+  .compatibility-table.compact th,
+  .compatibility-table.compact td { padding: 0.35rem; }
 
-  .compatibility-table th {
+  .compatibility-table thead th {
     background: #dbeafe;
     color: #1e3a8a;
     font-weight: 600;
   }
 
   .solver-name {
-    font-weight: 500;
+    font-weight: 600;
     background: #eff6ff;
     text-align: left;
-    padding-left: 0.75rem;
+    padding-left: 0.5rem;
+    width: auto; /* shrink to acronym */
   }
 
-  .check {
-    color: green;
-    font-size: 1.1rem;
+  .compat-cell {
+    transition: background-color 0.15s ease, color 0.15s ease;
+    font-weight: 600;
+    min-width: 28px;
+    height: 24px;
+    line-height: 1;
   }
 
-  .cross {
-    color: red;
-    font-size: 1.1rem;
-  }
-
-  /* === Hover Tooltip for Incompatibility Messages === */
-  .cross-wrapper {
-    position: relative;
-    display: inline-block;
-  }
-
-  .cross-wrapper .tooltip {
-    visibility: hidden;
-    opacity: 0;
-    position: absolute;
-    bottom: 130%;
-    left: 50%;
-    transform: translateX(-50%);
-    background: #111827;
-    color: #f9fafb;
-    padding: 0.5rem 0.7rem;
-    border-radius: 6px;
-    white-space: normal;
-    width: max-content;
-    max-width: 300px;
-    font-size: 0.8rem;
-    z-index: 2000;
-    transition: opacity 0.2s ease;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-  }
-
-  .cross-wrapper .tooltip strong {
-    color: #93c5fd;
-  }
-
-  .cross-wrapper .tooltip::after {
-    content: "";
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    border-width: 5px;
-    border-style: solid;
-    border-color: #111827 transparent transparent transparent;
-  }
-
-  .cross-wrapper:hover .tooltip {
-    visibility: visible;
-    opacity: 1;
-  }
+  .compat-cell.ok   { background: #dcfce7; color: #166534; }
+  .compat-cell.bad  { background: #fee2e2; color: #991b1b; }
+  .compat-cell.neutral { background: #f3f4f6; color: #6b7280; }
 </style>
+
 
