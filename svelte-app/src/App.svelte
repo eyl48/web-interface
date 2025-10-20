@@ -463,6 +463,35 @@
     text-overflow: ellipsis;
   }
 
+  /* Spacing between summary items */
+  .summary-section { margin-bottom: 1rem; }
+  .summary-item + .summary-item { margin-top: 0.75rem; }
+
+  /* Outlined toggle buttons inside summary */
+  .summary-toggle {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 0.65rem 0.9rem;
+    background: #ffffff;              /* white fill */
+    color: #1e3a8a;                   /* blue-ish text */
+    border: 1.5px solid #2563eb;      /* blue outline */
+    border-radius: 10px;
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: background-color .15s ease, box-shadow .15s ease, border-color .15s ease;
+  }
+  .summary-toggle:hover {
+    background: #eff6ff;              /* light blue hover */
+    box-shadow: 0 1px 4px rgba(37, 99, 235, 0.15);
+  }
+  .summary-toggle:active { background: #dbeafe; }
+  .summary-toggle:focus-visible {
+    outline: 3px solid rgba(37, 99, 235, .35);
+    outline-offset: 2px;
+  }
+
   /* === CARDS === */
   .card {
     background: #ffffff;
