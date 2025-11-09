@@ -19,7 +19,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 def extract_params_from_config(config_cls):
     """Extract parameter info (name, default, description) from a Pydantic BaseModel config."""
     params = []

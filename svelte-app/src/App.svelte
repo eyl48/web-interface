@@ -2,108 +2,184 @@
   import { onMount } from 'svelte';
 
   let currentPage = "Simulator";
+  const navigate = (p) => (currentPage = p);
+
   let allSolvers = [];
   let allProblems = [];
-  let solvers = [];
-  let problems = [];
+
+  let selectedSolverName = "";     // blank by default
+  let selectedProblemName = "";    // blank by default
+  let solverParams = [];           // [{name, description, default, value}]
+  let problemParams = [];
+
+  let summarySolvers = [];         // [{name, params:[...], expanded?:bool}]
+  let summaryProblems = [];
+
+  // { kind: 'solver'|'problem', index: number } | null
+  let editMode = null;
+
+  let macroreps = 10;
   let showPostProcess = false;
   let showPostNormalize = false;
+  let savePickle = false;
 
-  function navigate(page) {
-    currentPage = page;
+  let showConfirm = false;
+  let confirmKind = null;      // 'solver' | 'problem'
+  let confirmIndex = null;
+
+  function toDisplayString(val) {
+    if (val === null || val === undefined) return "";
+    if (typeof val === "string") return val;
+    try { return JSON.stringify(val); } catch { return String(val); }
+  }
+
+  function deepCopyParams(arr) {
+    return (arr || []).map(p => ({ ...p }));
   }
 
   function abbrev(name) {
     if (!name) return "";
-    const clean = String(name).replace(/[^A-Za-z0-9]/g, ""); // strip spaces/punct
-    return clean.slice(-4).toUpperCase();                     // last 4, uppercased
+    const clean = String(name).replace(/[^A-Za-z0-9]/g, "");
+    return clean.slice(-4).toUpperCase();   // last 4 chars
   }
 
   async function fetchSolverParams(name) {
+    if (!name) return [];
     const res = await fetch(`http://localhost:8000/solver_params/${encodeURIComponent(name)}`);
     const data = await res.json();
-    return data.parameters || [];
+    return (data.parameters || []).map(p => ({
+      name: p.name,
+      description: p.description || "",
+      default: p.default,
+      value: toDisplayString(p.default)
+    }));
   }
 
   async function fetchProblemParams(name) {
+    if (!name) return [];
     const res = await fetch(`http://localhost:8000/problem_params/${encodeURIComponent(name)}`);
     const data = await res.json();
-    return data.parameters || [];
+    return (data.parameters || []).map(p => ({
+      name: p.name,
+      description: p.description || "",
+      default: p.default,
+      value: toDisplayString(p.default)
+    }));
   }
 
-  async function addSolver() {
-    if (allSolvers.length > 0) {
-      const name = allSolvers[0];
-      const params = await fetchSolverParams(name);
-      solvers = [...solvers, { id: solvers.length, name, params }];
+  async function onSolverChange(name) {
+    selectedSolverName = name;
+    solverParams = name ? await fetchSolverParams(name) : [];
+  }
+  async function onProblemChange(name) {
+    selectedProblemName = name;
+    problemParams = name ? await fetchProblemParams(name) : [];
+  }
+
+  function resetSolverEditor() { selectedSolverName = ""; solverParams = []; editMode = null; }
+  function resetProblemEditor() { selectedProblemName = ""; problemParams = []; editMode = null; }
+
+  function addSolverToSummary() {
+    if (!selectedSolverName) return;
+    const entry = { name: selectedSolverName, params: deepCopyParams(solverParams), expanded: false };
+
+    if (editMode?.kind === 'solver') {
+      summarySolvers[editMode.index] = entry;
+      summarySolvers = [...summarySolvers];
+      resetSolverEditor();
+    } else {
+      summarySolvers = [...summarySolvers, entry];
+      resetSolverEditor();
     }
   }
 
-  async function addProblem() {
-    if (allProblems.length > 0) {
-      const name = allProblems[0];
-      const params = await fetchProblemParams(name);
-      problems = [...problems, { id: problems.length, name, params }];
+  function addProblemToSummary() {
+    if (!selectedProblemName) return;
+    const entry = { name: selectedProblemName, params: deepCopyParams(problemParams), expanded: false };
+
+    if (editMode?.kind === 'problem') {
+      summaryProblems[editMode.index] = entry;
+      summaryProblems = [...summaryProblems];
+      resetProblemEditor();
+    } else {
+      summaryProblems = [...summaryProblems, entry];
+      resetProblemEditor();
     }
   }
 
-  async function updateSolverParams(i, name) {
-    const params = await fetchSolverParams(name);
-    solvers[i].params = params;
-    solvers = [...solvers];
+  const removeSummarySolver = (i) => (summarySolvers = summarySolvers.filter((_, idx) => idx !== i));
+  const removeSummaryProblem = (i) => (summaryProblems = summaryProblems.filter((_, idx) => idx !== i));
+
+  function requestEdit(kind, index) {
+    const occupied = (kind === 'solver'  && selectedSolverName) ||
+                     (kind === 'problem' && selectedProblemName);
+    if (occupied) {
+      confirmKind = kind;
+      confirmIndex = index;
+      showConfirm = true;
+    } else {
+      startEdit(kind, index);
+    }
   }
 
-  async function updateProblemParams(i, name) {
-    const params = await fetchProblemParams(name);
-    problems[i].params = params;
-    problems = [...problems];
+  function closeConfirm() {
+    showConfirm = false;
+    confirmKind = null;
+    confirmIndex = null;
   }
 
-  function removeSolver(index) {
-    solvers = solvers.filter((_, i) => i !== index);
+  function confirmProceed() {
+    if (confirmKind != null && confirmIndex != null) {
+      startEdit(confirmKind, confirmIndex);
+    }
+    closeConfirm();
   }
 
-  function removeProblem(index) {
-    problems = problems.filter((_, i) => i !== index);
+  async function startEdit(kind, index) {
+    if (kind === 'solver') {
+      const s = summarySolvers[index];
+      selectedSolverName = s.name;
+      solverParams = deepCopyParams(s.params);
+      editMode = { kind: 'solver', index };
+    } else {
+      const p = summaryProblems[index];
+      selectedProblemName = p.name;
+      problemParams = deepCopyParams(p.params);
+      editMode = { kind: 'problem', index };
+    }
   }
 
   onMount(async () => {
     try {
-      const solversRes = await fetch('http://localhost:8000/solvers');
-      allSolvers = (await solversRes.json()).solvers;
-      if (allSolvers.length > 0) {
-        const params = await fetchSolverParams(allSolvers[0]);
-        solvers = [{ id: 0, name: allSolvers[0], params }];
-      }
-    } catch (err) {
-      console.error("Error fetching solvers:", err);
-    }
+      const sRes = await fetch('http://localhost:8000/solvers');
+      allSolvers = (await sRes.json()).solvers || [];
+    } catch (e) { console.error('Failed to fetch solvers', e); }
 
     try {
-      const problemsRes = await fetch('http://localhost:8000/problems');
-      allProblems = (await problemsRes.json()).problems;
-      if (allProblems.length > 0) {
-        const params = await fetchProblemParams(allProblems[0]);
-        problems = [{ id: 0, name: allProblems[0], params }];
-      }
-    } catch (err) {
-      console.error("Error fetching problems:", err);
-    }
+      const pRes = await fetch('http://localhost:8000/problems');
+      allProblems = (await pRes.json()).problems || [];
+    } catch (e) { console.error('Failed to fetch problems', e); }
   });
 
-  let compatibility = {}; // stores compatibility matrix
+  let showCompatModal = false;
 
+  function openCompatModal() {
+    if (summarySolvers.length && summaryProblems.length) showCompatModal = true;
+  }
+  function closeCompatModal() {
+    showCompatModal = false;
+  }
+
+  let compatibility = {};
   async function checkCompatibility() {
-    if (solvers.length === 0 || problems.length === 0) {
+    if (summarySolvers.length === 0 || summaryProblems.length === 0) {
       compatibility = {};
       return;
     }
-
     const payload = {
-      solvers: solvers.map((s) => s.name),
-      problems: problems.map((p) => p.name)
+      solvers: summarySolvers.map(s => s.name),
+      problems: summaryProblems.map(p => p.name)
     };
-
     try {
       const res = await fetch("http://localhost:8000/check_compatibility", {
         method: "POST",
@@ -112,13 +188,51 @@
       });
       const data = await res.json();
       compatibility = data.compatibility || {};
-    } catch (err) {
-      console.error("Error checking compatibility:", err);
+    } catch (e) {
+      console.error("Error checking compatibility:", e);
     }
   }
+  $: checkCompatibility(summarySolvers, summaryProblems);
 
-  // Re-run check when solvers/problems change
-  $: checkCompatibility(solvers, problems);
+  $: hasIncompatibility =
+    summarySolvers.length > 0 &&
+    summaryProblems.length > 0 &&
+    Object.values(compatibility).some(row =>
+      Object.values(row || {}).some(cell => cell && cell.compatible === false)
+    );
+  
+  let greenCount = 0, redCount = 0, totalCompatCells = 0;
+  let greenPct = 0, redPct = 0;
+
+  $: {
+    let g = 0, r = 0;
+    const solverNames = summarySolvers?.map(s => s.name) ?? [];
+    const problemNames = summaryProblems?.map(p => p.name) ?? [];
+
+    for (const s of solverNames) {
+      for (const p of problemNames) {
+        const cell = compatibility?.[s]?.[p];
+        // count only cells that explicitly report compatibility (skip neutral/missing)
+        if (cell && typeof cell.compatible === 'boolean') {
+          if (cell.compatible) g++; else r++;
+        }
+      }
+    }
+    greenCount = g;
+    redCount = r;
+    totalCompatCells = g + r;
+
+    if (totalCompatCells > 0) {
+      greenPct = Math.round((g * 1000) / totalCompatCells) / 10; // 1 decimal
+      redPct   = Math.round((r * 1000) / totalCompatCells) / 10;
+      // Keep them summing to 100.0 in case of rounding drift
+      const drift = 100 - (greenPct + redPct);
+      if (Math.abs(drift) >= 0.1) redPct = Math.max(0, +(redPct + drift).toFixed(1));
+    } else {
+      greenPct = 0;
+      redPct = 0;
+    }
+  }
 </script>
 
 <nav>
@@ -137,183 +251,218 @@
 <main>
   {#if currentPage === "Simulator"}
     <div class="row-3col">
-      <!-- === Left: Choose Solver === -->
+      <!-- === Left: Choose Solver (single editor) === -->
       <div class="card column">
         <h2>Choose Solver</h2>
-        {#each solvers as solver, i}
-          <div class="solver-block">
-            <div class="block-header">
-              <select bind:value={solver.name} on:change={(e) => updateSolverParams(i, e.target.value)}>
-                {#each allSolvers as option}
-                  <option>{option}</option>
-                {/each}
-              </select>
-              {#if i > 0}
-                <button class="remove-btn" on:click={() => removeSolver(i)}>×</button>
-              {/if}
-            </div>
 
-            <div class="param-box">
-              <p class="param-title">Solver Parameters</p>
-              {#each solver.params as param}
-                <label>
-                  <div style="display:flex;align-items:center;gap:0.4rem;">
-                    <span>{param.name}</span>
-                    {#if param.description}
-                      <span class="info-wrapper" aria-hidden="true">
-                        <span class="info-icon">ℹ</span>
-                        <div class="tooltip">{param.description}</div>
-                      </span>
-                    {/if}
-                  </div>
-                  <input type="text" value={param.default ?? ""} />
-                </label>
-              {/each}
-            </div>
+        <div class="block-header">
+          <select bind:value={selectedSolverName} on:change={(e) => onSolverChange(e.target.value)}>
+            <option value="">— Select a Solver —</option>
+            {#each allSolvers as option}
+              <option value={option}>{option}</option>
+            {/each}
+          </select>
+        </div>
+
+        {#if selectedSolverName}
+          <div class="param-box">
+            <p class="param-title">Solver Parameters</p>
+            {#each solverParams as param, idx}
+              <label>
+                <div style="display:flex;align-items:center;gap:0.4rem;">
+                  <span>{param.name}</span>
+                  {#if param.description}
+                    <span class="info-wrapper" aria-hidden="true">
+                      <span class="info-icon">ℹ</span>
+                      <div class="tooltip">{param.description}</div>
+                    </span>
+                  {/if}
+                </div>
+                <input
+                  type="text"
+                  bind:value={param.value}
+                  on:input={(e) => (solverParams[idx].value = e.target.value)}
+                />
+              </label>
+            {/each}
           </div>
-        {/each}
-        <button class="secondary-outline" on:click={addSolver}>+ Add Solver</button>
+
+          <button class="secondary-outline" on:click={addSolverToSummary}>
+            {editMode?.kind === 'solver' ? 'Apply Changes' : '+ Add Solver'}
+          </button>
+        {/if}
       </div>
 
-      <!-- === Middle: Choose Problem === -->
+      <!-- === Middle: Choose Problem (single editor) === -->
       <div class="card column">
         <h2>Choose Problem</h2>
-        {#each problems as problem, i}
-          <div class="problem-block">
-            <div class="block-header">
-              <select bind:value={problem.name} on:change={(e) => updateProblemParams(i, e.target.value)}>
-                {#each allProblems as option}
-                  <option>{option}</option>
-                {/each}
-              </select>
-              {#if i > 0}
-                <button class="remove-btn" on:click={() => removeProblem(i)}>×</button>
-              {/if}
-            </div>
 
-            <div class="param-box">
-              <p class="param-title">Problem Parameters</p>
-              {#each problem.params as param}
-                <label>
-                  <div style="display:flex;align-items:center;gap:0.4rem;">
-                    <span>{param.name}</span>
-                    {#if param.description}
-                      <span class="info-wrapper" aria-hidden="true">
-                        <span class="info-icon">ℹ</span>
-                        <div class="tooltip">{param.description}</div>
-                      </span>
-                    {/if}
-                  </div>
-                  <input type="text" value={param.default ?? ""} />
-                </label>
-              {/each}
-            </div>
+        <div class="block-header">
+          <select bind:value={selectedProblemName} on:change={(e) => onProblemChange(e.target.value)}>
+            <option value="">— Select a Problem —</option>
+            {#each allProblems as option}
+              <option value={option}>{option}</option>
+            {/each}
+          </select>
+        </div>
+
+        {#if selectedProblemName}
+          <div class="param-box">
+            <p class="param-title">Problem Parameters</p>
+            {#each problemParams as param, idx}
+              <label>
+                <div style="display:flex;align-items:center;gap:0.4rem;">
+                  <span>{param.name}</span>
+                  {#if param.description}
+                    <span class="info-wrapper" aria-hidden="true">
+                      <span class="info-icon">ℹ</span>
+                      <div class="tooltip">{param.description}</div>
+                    </span>
+                  {/if}
+                </div>
+                <input
+                  type="text"
+                  bind:value={param.value}
+                  on:input={(e) => (problemParams[idx].value = e.target.value)}
+                />
+              </label>
+            {/each}
           </div>
-        {/each}
-        <button class="secondary-outline" on:click={addProblem}>+ Add Problem</button>
+
+          <button class="secondary-outline" on:click={addProblemToSummary}>
+            {editMode?.kind === 'problem' ? 'Apply Changes' : '+ Add Problem'}
+          </button>
+        {/if}
       </div>
 
-      <!-- === Right Column: Summary + Compatibility === -->
+      <!-- === Right column: Summary + "Compatibility" trigger === -->
       <div class="right-column">
         <div class="summary card">
           <h3>Summary</h3>
 
           <!-- Solvers -->
           <div class="summary-section">
-            <p><strong>Solvers:</strong></p>
-            {#each solvers as solver}
+            <p><strong>Solvers</strong></p>
+            {#if summarySolvers.length === 0}
+              <p style="color:#6b7280;">No solvers added.</p>
+            {/if}
+            {#each summarySolvers as s, i}
               <div class="summary-item">
                 <button
-                  class="summary-toggle"
+                  class="summary-toggle pill"
                   on:click={() => {
-                    solver.expanded = !solver.expanded;
-                    solvers = [...solvers];
+                    s.expanded = !s.expanded;
+                    summarySolvers = [...summarySolvers];
                   }}
+                  title={s.name}
                 >
-                  {solver.expanded ? "▼" : "▶"} {solver.name}
+                  <span class="pill-text">{s.name}</span>
+                  <span class="pill-right">
+                    <span class="pill-chevron">{s.expanded ? "▼" : "▶"}</span>
+                    <span class="pill-close" title="Remove" on:click|stopPropagation={() => removeSummarySolver(i)}>×</span>
+                  </span>
                 </button>
-                {#if solver.expanded}
-                  <ul class="param-list">
-                    {#each solver.params as param}
-                      <li><strong>{param.name}:</strong> {param.default ?? ""}</li>
+
+                {#if s.expanded}
+                  <ul class="param-list" style="margin:.5rem 0;">
+                    {#each s.params as p}
+                      <li><strong>{p.name}:</strong> {p.value ?? p.default ?? ""}</li>
                     {/each}
                   </ul>
+                  <button class="secondary-outline" on:click={() => requestEdit('solver', i)}>Edit</button>
                 {/if}
               </div>
             {/each}
           </div>
 
           <!-- Problems -->
-          <div class="summary-section">
-            <p><strong>Problems:</strong></p>
-            {#each problems as problem}
+          <div class="summary-section" style="margin-top:1rem;">
+            <p><strong>Problems</strong></p>
+            {#if summaryProblems.length === 0}
+              <p style="color:#6b7280;">No problems added.</p>
+            {/if}
+            {#each summaryProblems as p, i}
               <div class="summary-item">
                 <button
-                  class="summary-toggle"
+                  class="summary-toggle pill"
                   on:click={() => {
-                    problem.expanded = !problem.expanded;
-                    problems = [...problems];
+                    p.expanded = !p.expanded;
+                    summaryProblems = [...summaryProblems];
                   }}
+                  title={p.name}
                 >
-                  {problem.expanded ? "▼" : "▶"} {problem.name}
+                  <span class="pill-text">{p.name}</span>
+                  <span class="pill-right">
+                    <span class="pill-chevron">{p.expanded ? "▼" : "▶"}</span>
+                    <span class="pill-close" title="Remove" on:click|stopPropagation={() => removeSummaryProblem(i)}>×</span>
+                  </span>
                 </button>
-                {#if problem.expanded}
-                  <ul class="param-list">
-                    {#each problem.params as param}
-                      <li><strong>{param.name}:</strong> {param.default ?? ""}</li>
+
+                {#if p.expanded}
+                  <ul class="param-list" style="margin:.5rem 0;">
+                    {#each p.params as q}
+                      <li><strong>{q.name}:</strong> {q.value ?? q.default ?? ""}</li>
                     {/each}
                   </ul>
+                  <button class="secondary-outline" on:click={() => requestEdit('problem', i)}>Edit</button>
                 {/if}
               </div>
             {/each}
           </div>
         </div>
 
-        {#if Object.keys(compatibility).length > 0}
+        <!-- Compatibility trigger card (updated: only % incompatible + full-width button) -->
+        {#if summarySolvers.length && summaryProblems.length}
           <div class="card compatibility-section compact">
             <h3>Compatibility</h3>
-            <table class="compatibility-table compact" aria-label="Solver–Problem compatibility matrix">
-              <thead>
-                <tr>
-                  <th scope="col">S \ P</th>
-                  {#each problems as p}
-                    <th scope="col" title={p.name}>{abbrev(p.name)}</th>
-                  {/each}
-                </tr>
-              </thead>
-              <tbody>
-                {#each solvers as s}
-                  <tr>
-                    <th class="solver-name" scope="row" title={s.name}>{abbrev(s.name)}</th>
-                    {#each problems as p}
-                      <td
-                        class={
-                          compatibility[s.name]?.[p.name]
-                            ? (compatibility[s.name][p.name].compatible ? 'compat-cell ok' : 'compat-cell bad')
-                            : 'compat-cell neutral'
-                        }
-                        title={
-                          compatibility[s.name]?.[p.name] && !compatibility[s.name][p.name].compatible && compatibility[s.name][p.name].message
-                            ? `${s.name} × ${p.name}: ${compatibility[s.name][p.name].message}`
-                            : ''
-                        }
-                      >
-                        &nbsp;
-                      </td>
-                    {/each}
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
+
+            {#if totalCompatCells > 0}
+              <!-- Show ONLY % incompatible in text, but draw both green + red in the bar -->
+              <div class="compat-progress" aria-label="Compatibility summary">
+                <div class="compat-progress-header" style="display:flex;justify-content:space-between;align-items:center;">
+                  <span class="compat-progress-title">Incompatible</span>
+                  <span class="compat-progress-numbers">
+                    <strong>{redPct}%</strong> ({redCount}/{totalCompatCells})
+                  </span>
+                </div>
+
+                <!-- Two-segment bar: green (ok) + red (incompatible) -->
+                <div
+                  class="compat-bar"
+                  role="img"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow={redPct}
+                  aria-label={`${greenPct}% compatible, ${redPct}% incompatible`}
+                  style="height:10px;background:#f3f4f6;border-radius:999px;overflow:hidden;display:flex;"
+                >
+                  <div class="bar-green" style="height:100%;width:{greenPct}%;background:#dcfce7;"></div>
+                  <div class="bar-red"   style="height:100%;width:{redPct}%;background:#fee2e2;"></div>
+                </div>
+              </div>
+            {:else}
+              <p class="compat-progress-empty">Add at least one solver and one problem to see compatibility.</p>
+            {/if}
+
+            <!-- Full-width button, still color-coded -->
+            <button
+              class="compat-trigger"
+              class:red-btn={hasIncompatibility}
+              class:green-btn={!hasIncompatibility}
+              on:click={openCompatModal}
+              style="display:block;width:100%;margin-top:.75rem;"
+            >
+              Open matrix
+            </button>
           </div>
         {/if}
       </div>
     </div>
 
-    <!-- === Controls under grid === -->
-    <div class="card section">
+    <!-- === Bottom controls (kept) === -->
+    <div class="card section" style="max-width:640px;">
       <label>Number of Macroreplications</label><br />
-      <input type="number" value="10" />
+      <input type="number" bind:value={macroreps} min="1" step="1" />
     </div>
 
     <div class="row dropdown-row">
@@ -322,7 +471,9 @@
           {showPostProcess ? "▼" : "▶"} Post-Process
         </button>
         {#if showPostProcess}
-          <div class="dropdown-content"><p>Post-process options will go here...</p></div>
+          <div class="dropdown-content post-form">
+            <p style="margin:0;color:#6b7280;">(placeholder controls)</p>
+          </div>
         {/if}
       </div>
 
@@ -331,21 +482,90 @@
           {showPostNormalize ? "▼" : "▶"} Post-Normalize
         </button>
         {#if showPostNormalize}
-          <div class="dropdown-content"><p>Post-normalize options will go here...</p></div>
+          <div class="dropdown-content post-form">
+            <p style="margin:0;color:#6b7280;">(placeholder controls)</p>
+          </div>
         {/if}
       </div>
     </div>
 
-    <div class="card section">
-      <label><input type="checkbox" /> Save outputs to pickle file</label>
+    <div class="card section" style="max-width:640px;">
+      <label><input type="checkbox" bind:checked={savePickle} /> Save outputs to pickle file</label>
     </div>
 
     <div class="button-row">
-      <button class="cta">Run Experiment</button>
+      <button class="cta" on:click={() => console.log('Run Experiment payload coming soon…')}>Run Experiment</button>
     </div>
+
+    <!-- === Replace confirmation modal === -->
+    {#if showConfirm}
+      <div class="modal-backdrop" on:click={closeConfirm}>
+        <div class="modal" on:click|stopPropagation>
+          <h3>Replace current editor?</h3>
+          <p>
+            You already have a {confirmKind === 'solver' ? 'solver' : 'problem'} open in the editor.
+            If you continue, the current selection and any unsaved parameter changes will be replaced.
+          </p>
+          <div class="modal-actions">
+            <button class="btn" on:click={closeConfirm}>Cancel</button>
+            <button class="btn btn-primary" on:click={confirmProceed}>Replace</button>
+          </div>
+        </div>
+      </div>
+    {/if}
+
+    <!-- === Compatibility matrix modal (unchanged) === -->
+    {#if showCompatModal}
+      <div class="modal-backdrop" on:click={closeCompatModal}>
+        <div
+          class="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Compatibility matrix"
+          on:click|stopPropagation
+        >
+          <h3 style="margin-top:0">Solver–Problem Compatibility</h3>
+
+          <table class="compatibility-table compact" aria-label="Solver–Problem compatibility matrix">
+            <thead>
+              <tr>
+                <th scope="col">S \ P</th>
+                {#each summaryProblems as p}
+                  <th scope="col" title={p.name}>{abbrev(p.name)}</th>
+                {/each}
+              </tr>
+            </thead>
+            <tbody>
+              {#each summarySolvers as s}
+                <tr>
+                  <th class="solver-name" scope="row" title={s.name}>{abbrev(s.name)}</th>
+                  {#each summaryProblems as p}
+                    <td
+                      class={
+                        compatibility[s.name]?.[p.name]
+                          ? (compatibility[s.name][p.name].compatible ? 'compat-cell ok' : 'compat-cell bad')
+                          : 'compat-cell neutral'
+                      }
+                      title={
+                        compatibility[s.name]?.[p.name] && !compatibility[s.name][p.name].compatible && compatibility[s.name][p.name].message
+                          ? `${s.name} × ${p.name}: ${compatibility[s.name][p.name].message}`
+                          : ''
+                      }
+                    >&nbsp;</td>
+                  {/each}
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+
+          <div class="modal-actions" style="margin-top:0.75rem;">
+            <button class="btn" on:click={closeCompatModal}>Close</button>
+          </div>
+        </div>
+      </div>
+    {/if}
   {/if}
 </main>
-
 
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -734,6 +954,178 @@
   .compat-cell.ok   { background: #dcfce7; color: #166534; }
   .compat-cell.bad  { background: #fee2e2; color: #991b1b; }
   .compat-cell.neutral { background: #f3f4f6; color: #6b7280; }
+
+  /* Modal */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.4);
+    display: grid;
+    place-items: center;
+    z-index: 2000;
+  }
+  .modal {
+    background: #ffffff;
+    width: min(520px, 92vw);
+    border-radius: 12px;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.18);
+    padding: 1.25rem 1.25rem 1rem;
+  }
+  .modal h3 {
+    margin: 0 0 0.5rem;
+    font-size: 1.1rem;
+    color: #0f172a;
+  }
+  .modal p {
+    margin: 0 0 1rem;
+    color: #374151;
+    line-height: 1.4;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+  .btn {
+    border: 1px solid #cbd5e1;
+    background: #fff;
+    color: #0f172a;
+    padding: 0.45rem 0.9rem;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .btn:hover { background: #f8fafc; }
+  .btn-primary {
+    border-color: #2563eb;
+    background: #2563eb;
+    color: #fff;
+  }
+  .btn-primary:hover { background: #1e40af; }
+
+  /* Summary pill with inline close (×) */
+  .summary-toggle.pill {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: .5rem;
+    width: 100%;
+    background: #fff;
+    color: #1e3a8a;
+    border: 1.5px solid #2563eb;
+    border-radius: 10px;
+    padding: .55rem .6rem .55rem .75rem;
+    text-align: left;
+  }
+  .summary-toggle.pill:hover { background: #eff6ff; }
+  .pill-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pill-right {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+  }
+  .pill-chevron { font-weight: 700; font-size: .9rem; color: #1e3a8a; }
+  .pill-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    border: 1px solid #e5e7eb;
+    color: #6b7280;
+    cursor: pointer;
+  }
+  .pill-close:hover { background: #f9fafb; color: #111827; border-color: #d1d5db; }
+
+  /* space out items more */
+  .summary-item + .summary-item { margin-top: .9rem; }
+  .compat-trigger {
+    border: 1.5px solid #2563eb;
+    background: #ffffff;
+    color: #1e3a8a;
+    padding: 0.45rem 0.9rem;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease;
+  }
+
+  /* Green variant (no incompatibilities) */
+  .compat-trigger.green-btn {
+    border-color: #16a34a;
+    color: #14532d;
+    background: #dcfce7;
+  }
+  .compat-trigger.green-btn:hover {
+    background: #bbf7d0;
+    box-shadow: 0 1px 4px rgba(22,163,74,.2);
+  }
+
+  /* Red variant (>=1 incompatibility) */
+  .compat-trigger.red-btn {
+    border-color: #dc2626;
+    color: #7f1d1d;
+    background: #fee2e2;
+  }
+  .compat-trigger.red-btn:hover {
+    background: #fecaca;
+    box-shadow: 0 1px 4px rgba(220,38,38,.2);
+  }
+
+  /* Keyboard focus */
+  .compat-trigger:focus-visible {
+    outline: 3px solid rgba(37,99,235,.35);
+    outline-offset: 2px;
+  }
+
+  /* --- Compatibility progress bar --- */
+  .compat-progress { margin-bottom: 0.6rem; }
+
+  .compat-progress-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 0.35rem;
+  }
+
+  .compat-progress-title {
+    font-weight: 600;
+    color: #0f172a;
+    font-size: 0.95rem;
+  }
+
+  .compat-progress-numbers {
+    font-size: 0.9rem;
+    color: #374151;
+  }
+
+  .compat-bar {
+    display: flex;            /* lays green and red side-by-side */
+    width: 100%;
+    height: 10px;
+    background: #f3f4f6;      /* neutral track */
+    border-radius: 9999px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px #e5e7eb;
+  }
+
+  .bar-green {
+    height: 100%;
+    background: #22c55e;      /* green-500 */
+  }
+
+  .bar-red {
+    height: 100%;
+    background: #ef4444;      /* red-500 */
+  }
+
+  .compat-progress-empty {
+    margin: 0 0 0.6rem 0;
+    color: #6b7280;
+    font-size: 0.9rem;
+  }
 </style>
-
-
