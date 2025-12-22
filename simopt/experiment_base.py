@@ -1845,6 +1845,123 @@ def check_common_problem_and_reference(
         error_msg = "All experiments must have the same optimal solution."
         raise ValueError(error_msg)
 
+from typing import Annotated, Optional
+from pydantic import BaseModel, Field
+
+class PlotProgressCurvesConfig(BaseModel):
+    """
+    Options for experiment_base.plot_progress_curves (excluding `experiments`).
+    """
+
+    plot_type: Annotated[
+        PlotType,
+        Field(
+            default=PlotType.ALL,
+            description="Type of plot to produce (ALL, MEAN, or QUANTILE).",
+        ),
+    ]
+
+    beta: Annotated[
+        float,
+        Field(
+            default=0.50,
+            description="Quantile level to plot (0 < beta < 1). Used for QUANTILE plots.",
+            gt=0.0,
+            lt=1.0,
+        ),
+    ]
+
+    normalize: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="If True, normalize curves by optimality gaps.",
+        ),
+    ]
+
+    all_in_one: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="If True, plot all curves in one figure.",
+        ),
+    ]
+
+    n_bootstraps: Annotated[
+        int,
+        Field(
+            default=100,
+            description="Number of bootstrap samples.",
+            ge=1,
+        ),
+    ]
+
+    conf_level: Annotated[
+        float,
+        Field(
+            default=0.95,
+            description="Confidence level for CIs (0 < conf_level < 1).",
+            gt=0.0,
+            lt=1.0,
+        ),
+    ]
+
+    plot_conf_ints: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="If True, plot bootstrapped confidence intervals.",
+        ),
+    ]
+
+    print_max_hw: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="If True, print caption with max half-width.",
+        ),
+    ]
+
+    plot_title: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description="Custom plot title (used only if all_in_one=True).",
+        ),
+    ]
+
+    legend_loc: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description='Legend location (e.g., "best", "lower right").',
+        ),
+    ]
+
+    ext: Annotated[
+        str,
+        Field(
+            default=".png",
+            description='File extension for saved plots (e.g., ".png").',
+        ),
+    ]
+
+    save_as_pickle: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="If True, also save a pickle of the plot.",
+        ),
+    ]
+
+    solver_set_name: Annotated[
+        str,
+        Field(
+            default="SOLVER_SET",
+            description='Label for solver group in plot titles.',
+            min_length=1,
+        ),
+    ]
 
 def plot_progress_curves(
     experiments: list[ProblemSolver],

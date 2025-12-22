@@ -27,10 +27,31 @@
   let confirmKind = null;      // 'solver' | 'problem'
   let confirmIndex = null;
 
+  let allPlots = [];
+  let selectedPlotName = "";
+  let plotParams = []; // [{name, description, default, value}]
+
   function toDisplayString(val) {
     if (val === null || val === undefined) return "";
     if (typeof val === "string") return val;
     try { return JSON.stringify(val); } catch { return String(val); }
+  }
+
+  async function fetchPlotParams(name) {
+    if (!name) return [];
+    const res = await fetch(`http://localhost:8000/plot_params/${encodeURIComponent(name)}`);
+    const data = await res.json();
+    return (data.parameters || []).map(p => ({
+      name: p.name,
+      description: p.description || "",
+      default: p.default,
+      value: toDisplayString(p.default),
+    }));
+  }
+
+  async function onPlotChange(name) {
+    selectedPlotName = name;
+    plotParams = (name === "MEAN") ? await fetchPlotParams(name) : [];
   }
 
   function deepCopyParams(arr) {
@@ -110,6 +131,28 @@
   const removeSummarySolver = (i) => (summarySolvers = summarySolvers.filter((_, idx) => idx !== i));
   const removeSummaryProblem = (i) => (summaryProblems = summaryProblems.filter((_, idx) => idx !== i));
 
+  let summaryPlots = []; // [{ name, params:[{name, description, default, value}], expanded?:bool }]
+
+  function resetPlotEditor() {
+    selectedPlotName = "";
+    plotParams = [];
+  }
+
+  function addPlotToSummary() {
+    if (!selectedPlotName) return;
+    const entry = {
+      name: selectedPlotName,
+      params: deepCopyParams(plotParams),
+      expanded: false
+    };
+    summaryPlots = [...summaryPlots, entry];
+    // mirror solver/problem behavior: reset dropdown after add
+    resetPlotEditor();
+  }
+
+  const removeSummaryPlot = (i) =>
+    (summaryPlots = summaryPlots.filter((_, idx) => idx !== i));
+
   function requestEdit(kind, index) {
     const occupied = (kind === 'solver'  && selectedSolverName) ||
                      (kind === 'problem' && selectedProblemName);
@@ -135,6 +178,33 @@
     closeConfirm();
   }
 
+  // --- Post-replicate / Post-normalize fixed forms ---
+  let prSchema = { params: [] };      // fetched schema for post-replicate
+  let pnSchema = { params: [] };      // fetched schema for post-normalize
+  let prValues = {};                  // current values bound to the form
+  let pnValues = {};                  // current values bound to the form
+
+  function initValuesFromSchema(schema, target) {
+    const t = {};
+    for (const p of schema.params || []) t[p.name] = p.default;
+    return Object.assign(target, t);
+  }
+
+  // grab schemas on mount (you already have an onMount—just add these fetches there)
+  async function loadPostFixedForms() {
+    try {
+      const r1 = await fetch("http://localhost:8000/postreplicate_schema");
+      prSchema = await r1.json();
+      prValues = initValuesFromSchema(prSchema, {});
+    } catch (e) { console.error("postreplicate_schema", e); }
+
+    try {
+      const r2 = await fetch("http://localhost:8000/postnormalize_schema");
+      pnSchema = await r2.json();
+      pnValues = initValuesFromSchema(pnSchema, {});
+    } catch (e) { console.error("postnormalize_schema", e); }
+  }
+
   async function startEdit(kind, index) {
     if (kind === 'solver') {
       const s = summarySolvers[index];
@@ -150,6 +220,7 @@
   }
 
   onMount(async () => {
+    await loadPostFixedForms();
     try {
       const sRes = await fetch('http://localhost:8000/solvers');
       allSolvers = (await sRes.json()).solvers || [];
@@ -159,6 +230,15 @@
       const pRes = await fetch('http://localhost:8000/problems');
       allProblems = (await pRes.json()).problems || [];
     } catch (e) { console.error('Failed to fetch problems', e); }
+
+    try {
+      const r = await fetch('http://localhost:8000/plots');
+      const data = await r.json();
+      allPlots = data.plots || [];
+    } catch (e) {
+      console.error('Failed to fetch plots:', e);
+      allPlots = [];
+    }
   });
 
   let showCompatModal = false;
@@ -251,91 +331,225 @@
 <main>
   {#if currentPage === "Simulator"}
     <div class="row-3col">
-      <!-- === Left: Choose Solver (single editor) === -->
-      <div class="card column">
-        <h2>Choose Solver</h2>
+      <!-- ===== Left column: Solver + Post-replicate + Choose Plot ===== -->
+      <div class="col-stack">
+        <!-- === Choose Solver === -->
+        <div class="card column">
+          <h2>Choose Solver</h2>
 
-        <div class="block-header">
-          <select bind:value={selectedSolverName} on:change={(e) => onSolverChange(e.target.value)}>
-            <option value="">— Select a Solver —</option>
-            {#each allSolvers as option}
-              <option value={option}>{option}</option>
-            {/each}
-          </select>
-        </div>
+          {#if selectedSolverName}
+            <button
+              class="secondary-outline"
+              style="margin-bottom:0.75rem;"
+              on:click={addSolverToSummary}
+            >
+              {editMode?.kind === 'solver' ? 'Apply Changes' : '+ Add Solver'}
+            </button>
+          {/if}
 
-        {#if selectedSolverName}
-          <div class="param-box">
-            <p class="param-title">Solver Parameters</p>
-            {#each solverParams as param, idx}
-              <label>
-                <div style="display:flex;align-items:center;gap:0.4rem;">
-                  <span>{param.name}</span>
-                  {#if param.description}
-                    <span class="info-wrapper" aria-hidden="true">
-                      <span class="info-icon">ℹ</span>
-                      <div class="tooltip">{param.description}</div>
-                    </span>
-                  {/if}
-                </div>
-                <input
-                  type="text"
-                  bind:value={param.value}
-                  on:input={(e) => (solverParams[idx].value = e.target.value)}
-                />
-              </label>
-            {/each}
+          <div class="block-header">
+            <select bind:value={selectedSolverName} on:change={(e) => onSolverChange(e.target.value)}>
+              <option value="">— Select a Solver —</option>
+              {#each allSolvers as option}
+                <option value={option}>{option}</option>
+              {/each}
+            </select>
           </div>
 
-          <button class="secondary-outline" on:click={addSolverToSummary}>
-            {editMode?.kind === 'solver' ? 'Apply Changes' : '+ Add Solver'}
-          </button>
-        {/if}
-      </div>
-
-      <!-- === Middle: Choose Problem (single editor) === -->
-      <div class="card column">
-        <h2>Choose Problem</h2>
-
-        <div class="block-header">
-          <select bind:value={selectedProblemName} on:change={(e) => onProblemChange(e.target.value)}>
-            <option value="">— Select a Problem —</option>
-            {#each allProblems as option}
-              <option value={option}>{option}</option>
-            {/each}
-          </select>
+          {#if selectedSolverName}
+            <div class="param-box">
+              <p class="param-title">Solver Parameters</p>
+              {#each solverParams as param, idx}
+                <label>
+                  <div style="display:flex;align-items:center;gap:0.4rem;">
+                    <span>{param.name}</span>
+                    {#if param.description}
+                      <span class="info-wrapper" aria-hidden="true">
+                        <span class="info-icon">ℹ</span>
+                        <div class="tooltip">{param.description}</div>
+                      </span>
+                    {/if}
+                  </div>
+                  <input
+                    type="text"
+                    bind:value={param.value}
+                    on:input={(e) => (solverParams[idx].value = e.target.value)}
+                  />
+                </label>
+              {/each}
+            </div>
+          {/if}
         </div>
 
-        {#if selectedProblemName}
-          <div class="param-box">
-            <p class="param-title">Problem Parameters</p>
-            {#each problemParams as param, idx}
-              <label>
-                <div style="display:flex;align-items:center;gap:0.4rem;">
-                  <span>{param.name}</span>
-                  {#if param.description}
-                    <span class="info-wrapper" aria-hidden="true">
-                      <span class="info-icon">ℹ</span>
-                      <div class="tooltip">{param.description}</div>
-                    </span>
-                  {/if}
-                </div>
-                <input
-                  type="text"
-                  bind:value={param.value}
-                  on:input={(e) => (problemParams[idx].value = e.target.value)}
-                />
-              </label>
-            {/each}
+        <!-- === POST-REPLICATE === -->
+        <div class="card">
+          <button class="dropdown" on:click={() => (showPostProcess = !showPostProcess)}>
+            {showPostProcess ? "▼" : "▶"} Post-replicate
+          </button>
+
+          {#if showPostProcess}
+            <div class="dropdown-content">
+              <div class="param-box">
+                <p class="param-title">Options for Post-replication</p>
+
+                {#each prSchema.params as p}
+                  <label>
+                    <span>{p.label}</span>
+
+                    {#if p.type === "bool"}
+                      <select bind:value={prValues[p.name]}>
+                        <option value={true}>Yes</option>
+                        <option value={false}>No</option>
+                      </select>
+                    {:else if p.type === "int"}
+                      <input type="number" bind:value={prValues[p.name]} min="0" step="1" />
+                    {:else if p.type === "float"}
+                      <input type="number" bind:value={prValues[p.name]} step="0.01" />
+                    {:else}
+                      <input type="text" bind:value={prValues[p.name]} />
+                    {/if}
+                  </label>
+                {/each}
+              </div>
+            </div>
+          {/if}
+        </div>
+
+        <!-- Choose Plot -->
+        <div class="card column">
+          <h2>Choose Plot</h2>
+
+          {#if selectedPlotName}
+            <button
+              class="secondary-outline"
+              style="margin-bottom:0.75rem;"
+              on:click={addPlotToSummary}
+            >
+              + Add Plot
+            </button>
+          {/if}
+
+          <div class="block-header">
+            <select bind:value={selectedPlotName} on:change={(e) => onPlotChange(e.target.value)}>
+              <option value="">— Select a Plot —</option>
+              {#each allPlots as plot}
+                <option value={plot}>{plot}</option>
+              {/each}
+            </select>
           </div>
 
-          <button class="secondary-outline" on:click={addProblemToSummary}>
-            {editMode?.kind === 'problem' ? 'Apply Changes' : '+ Add Problem'}
-          </button>
-        {/if}
+          {#if selectedPlotName === "MEAN" && plotParams.length}
+            <div class="param-box" style="margin-top:.5rem;">
+              <p class="param-title">Plot Parameters (MEAN)</p>
+              {#each plotParams as p, i}
+                <label>
+                  <div style="display:flex;align-items:center;gap:0.4rem;">
+                    <span>{p.name}</span>
+                    {#if p.description}
+                      <span class="info-wrapper" aria-hidden="true">
+                        <span class="info-icon">ℹ</span>
+                        <div class="tooltip">{p.description}</div>
+                      </span>
+                    {/if}
+                  </div>
+                  <input
+                    type="text"
+                    bind:value={p.value}
+                    on:input={(e)=> (plotParams[i].value = e.target.value)}
+                  />
+                </label>
+              {/each}
+            </div>
+          {/if}
+        </div>
       </div>
 
-      <!-- === Right column: Summary + "Compatibility" trigger === -->
+      <!-- ===== Middle column: Problem + Post-normalize ===== -->
+      <div class="col-stack">
+        <!-- === Choose Problem === -->
+        <div class="card column">
+          <h2>Choose Problem</h2>
+
+          {#if selectedProblemName}
+            <button
+              class="secondary-outline"
+              style="margin-bottom:0.75rem;"
+              on:click={addProblemToSummary}
+            >
+              {editMode?.kind === 'problem' ? 'Apply Changes' : '+ Add Problem'}
+            </button>
+          {/if}
+
+          <div class="block-header">
+            <select bind:value={selectedProblemName} on:change={(e) => onProblemChange(e.target.value)}>
+              <option value="">— Select a Problem —</option>
+              {#each allProblems as option}
+                <option value={option}>{option}</option>
+              {/each}
+            </select>
+          </div>
+
+          {#if selectedProblemName}
+            <div class="param-box">
+              <p class="param-title">Problem Parameters</p>
+              {#each problemParams as param, idx}
+                <label>
+                  <div style="display:flex;align-items:center;gap:0.4rem;">
+                    <span>{param.name}</span>
+                    {#if param.description}
+                      <span class="info-wrapper" aria-hidden="true">
+                        <span class="info-icon">ℹ</span>
+                        <div class="tooltip">{param.description}</div>
+                      </span>
+                    {/if}
+                  </div>
+                  <input
+                    type="text"
+                    bind:value={param.value}
+                    on:input={(e) => (problemParams[idx].value = e.target.value)}
+                  />
+                </label>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <!-- === POST-NORMALIZE (moved under problem) === -->
+        <div class="card">
+          <button class="dropdown" on:click={() => (showPostNormalize = !showPostNormalize)}>
+            {showPostNormalize ? "▼" : "▶"} Post-normalize
+          </button>
+
+          {#if showPostNormalize}
+            <div class="dropdown-content">
+              <div class="param-box">
+                <p class="param-title">Options for Post-normalize</p>
+
+                {#each pnSchema.params as p}
+                  <label>
+                    <span>{p.label}</span>
+
+                    {#if p.type === "bool"}
+                      <select bind:value={pnValues[p.name]}>
+                        <option value={true}>Yes</option>
+                        <option value={false}>No</option>
+                      </select>
+                    {:else if p.type === "int"}
+                      <input type="number" bind:value={pnValues[p.name]} min="0" step="1" />
+                    {:else if p.type === "float"}
+                      <input type="number" bind:value={pnValues[p.name]} step="0.01" />
+                    {:else}
+                      <input type="text" bind:value={pnValues[p.name]} />
+                    {/if}
+                  </label>
+                {/each}
+              </div>
+            </div>
+          {/if}
+        </div>
+      </div>
+
+      <!-- ===== Right column: Summary + Compatibility ===== -->
       <div class="right-column">
         <div class="summary card">
           <h3>Summary</h3>
@@ -350,10 +564,7 @@
               <div class="summary-item">
                 <button
                   class="summary-toggle pill"
-                  on:click={() => {
-                    s.expanded = !s.expanded;
-                    summarySolvers = [...summarySolvers];
-                  }}
+                  on:click={() => { s.expanded = !s.expanded; summarySolvers = [...summarySolvers]; }}
                   title={s.name}
                 >
                   <span class="pill-text">{s.name}</span>
@@ -362,12 +573,9 @@
                     <span class="pill-close" title="Remove" on:click|stopPropagation={() => removeSummarySolver(i)}>×</span>
                   </span>
                 </button>
-
                 {#if s.expanded}
                   <ul class="param-list" style="margin:.5rem 0;">
-                    {#each s.params as p}
-                      <li><strong>{p.name}:</strong> {p.value ?? p.default ?? ""}</li>
-                    {/each}
+                    {#each s.params as p}<li><strong>{p.name}:</strong> {p.value ?? p.default ?? ""}</li>{/each}
                   </ul>
                   <button class="secondary-outline" on:click={() => requestEdit('solver', i)}>Edit</button>
                 {/if}
@@ -385,10 +593,7 @@
               <div class="summary-item">
                 <button
                   class="summary-toggle pill"
-                  on:click={() => {
-                    p.expanded = !p.expanded;
-                    summaryProblems = [...summaryProblems];
-                  }}
+                  on:click={() => { p.expanded = !p.expanded; summaryProblems = [...summaryProblems]; }}
                   title={p.name}
                 >
                   <span class="pill-text">{p.name}</span>
@@ -397,36 +602,72 @@
                     <span class="pill-close" title="Remove" on:click|stopPropagation={() => removeSummaryProblem(i)}>×</span>
                   </span>
                 </button>
-
                 {#if p.expanded}
                   <ul class="param-list" style="margin:.5rem 0;">
-                    {#each p.params as q}
-                      <li><strong>{q.name}:</strong> {q.value ?? q.default ?? ""}</li>
-                    {/each}
+                    {#each p.params as q}<li><strong>{q.name}:</strong> {q.value ?? q.default ?? ""}</li>{/each}
                   </ul>
                   <button class="secondary-outline" on:click={() => requestEdit('problem', i)}>Edit</button>
                 {/if}
               </div>
             {/each}
           </div>
+
+          <!-- Plots -->
+          <div class="summary-section" style="margin-top:1rem;">
+            <p><strong>Plots</strong></p>
+            {#if summaryPlots.length === 0}
+              <p style="color:#6b7280;">No plots added.</p>
+            {/if}
+
+            {#each summaryPlots as pl, i}
+              <div class="summary-item">
+                <button
+                  class="summary-toggle pill"
+                  on:click={() => {
+                    pl.expanded = !pl.expanded;
+                    summaryPlots = [...summaryPlots];
+                  }}
+                  title={pl.name}
+                >
+                  <span class="pill-text">{pl.name}</span>
+                  <span class="pill-right">
+                    <span class="pill-chevron">{pl.expanded ? "▼" : "▶"}</span>
+                    <span
+                      class="pill-close"
+                      title="Remove"
+                      on:click|stopPropagation={() => removeSummaryPlot(i)}
+                    >×</span>
+                  </span>
+                </button>
+
+                {#if pl.expanded}
+                  <!-- Show params if the plot had any (e.g., MEAN) -->
+                  {#if pl.params && pl.params.length}
+                    <ul class="param-list" style="margin:.5rem 0;">
+                      {#each pl.params as p}
+                        <li><strong>{p.name}:</strong> {p.value ?? p.default ?? ""}</li>
+                      {/each}
+                    </ul>
+                  {:else}
+                    <p style="margin:.5rem 0;color:#6b7280;">No parameters.</p>
+                  {/if}
+                {/if}
+              </div>
+            {/each}
+          </div>
         </div>
 
-        <!-- Compatibility trigger card (updated: only % incompatible + full-width button) -->
+        <!-- Compatibility + progress + full-width trigger -->
         {#if summarySolvers.length && summaryProblems.length}
           <div class="card compatibility-section compact">
             <h3>Compatibility</h3>
 
             {#if totalCompatCells > 0}
-              <!-- Show ONLY % incompatible in text, but draw both green + red in the bar -->
               <div class="compat-progress" aria-label="Compatibility summary">
                 <div class="compat-progress-header" style="display:flex;justify-content:space-between;align-items:center;">
                   <span class="compat-progress-title">Incompatible</span>
-                  <span class="compat-progress-numbers">
-                    <strong>{redPct}%</strong> ({redCount}/{totalCompatCells})
-                  </span>
+                  <span class="compat-progress-numbers"><strong>{redPct}%</strong> ({redCount}/{totalCompatCells})</span>
                 </div>
-
-                <!-- Two-segment bar: green (ok) + red (incompatible) -->
                 <div
                   class="compat-bar"
                   role="img"
@@ -434,17 +675,15 @@
                   aria-valuemax="100"
                   aria-valuenow={redPct}
                   aria-label={`${greenPct}% compatible, ${redPct}% incompatible`}
-                  style="height:10px;background:#f3f4f6;border-radius:999px;overflow:hidden;display:flex;"
                 >
-                  <div class="bar-green" style="height:100%;width:{greenPct}%;background:#dcfce7;"></div>
-                  <div class="bar-red"   style="height:100%;width:{redPct}%;background:#fee2e2;"></div>
+                  <div class="bar-green" style="width:{greenPct}%;"></div>
+                  <div class="bar-red"   style="width:{redPct}%;"></div>
                 </div>
               </div>
             {:else}
               <p class="compat-progress-empty">Add at least one solver and one problem to see compatibility.</p>
             {/if}
 
-            <!-- Full-width button, still color-coded -->
             <button
               class="compat-trigger"
               class:red-btn={hasIncompatibility}
@@ -459,36 +698,7 @@
       </div>
     </div>
 
-    <!-- === Bottom controls (kept) === -->
-    <div class="card section" style="max-width:640px;">
-      <label>Number of Macroreplications</label><br />
-      <input type="number" bind:value={macroreps} min="1" step="1" />
-    </div>
-
-    <div class="row dropdown-row">
-      <div class="dropdown-container">
-        <button class="dropdown" on:click={() => (showPostProcess = !showPostProcess)}>
-          {showPostProcess ? "▼" : "▶"} Post-Process
-        </button>
-        {#if showPostProcess}
-          <div class="dropdown-content post-form">
-            <p style="margin:0;color:#6b7280;">(placeholder controls)</p>
-          </div>
-        {/if}
-      </div>
-
-      <div class="dropdown-container">
-        <button class="dropdown" on:click={() => (showPostNormalize = !showPostNormalize)}>
-          {showPostNormalize ? "▼" : "▶"} Post-Normalize
-        </button>
-        {#if showPostNormalize}
-          <div class="dropdown-content post-form">
-            <p style="margin:0;color:#6b7280;">(placeholder controls)</p>
-          </div>
-        {/if}
-      </div>
-    </div>
-
+    <!-- === Save + Run === -->
     <div class="card section" style="max-width:640px;">
       <label><input type="checkbox" bind:checked={savePickle} /> Save outputs to pickle file</label>
     </div>
@@ -497,15 +707,12 @@
       <button class="cta" on:click={() => console.log('Run Experiment payload coming soon…')}>Run Experiment</button>
     </div>
 
-    <!-- === Replace confirmation modal === -->
+    <!-- === Modals (unchanged) === -->
     {#if showConfirm}
       <div class="modal-backdrop" on:click={closeConfirm}>
         <div class="modal" on:click|stopPropagation>
           <h3>Replace current editor?</h3>
-          <p>
-            You already have a {confirmKind === 'solver' ? 'solver' : 'problem'} open in the editor.
-            If you continue, the current selection and any unsaved parameter changes will be replaced.
-          </p>
+          <p>You already have a {confirmKind === 'solver' ? 'solver' : 'problem'} open in the editor. If you continue, the current selection and any unsaved parameter changes will be replaced.</p>
           <div class="modal-actions">
             <button class="btn" on:click={closeConfirm}>Cancel</button>
             <button class="btn btn-primary" on:click={confirmProceed}>Replace</button>
@@ -514,18 +721,10 @@
       </div>
     {/if}
 
-    <!-- === Compatibility matrix modal (unchanged) === -->
     {#if showCompatModal}
       <div class="modal-backdrop" on:click={closeCompatModal}>
-        <div
-          class="modal"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Compatibility matrix"
-          on:click|stopPropagation
-        >
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Compatibility matrix" on:click|stopPropagation>
           <h3 style="margin-top:0">Solver–Problem Compatibility</h3>
-
           <table class="compatibility-table compact" aria-label="Solver–Problem compatibility matrix">
             <thead>
               <tr>
@@ -541,23 +740,14 @@
                   <th class="solver-name" scope="row" title={s.name}>{abbrev(s.name)}</th>
                   {#each summaryProblems as p}
                     <td
-                      class={
-                        compatibility[s.name]?.[p.name]
-                          ? (compatibility[s.name][p.name].compatible ? 'compat-cell ok' : 'compat-cell bad')
-                          : 'compat-cell neutral'
-                      }
-                      title={
-                        compatibility[s.name]?.[p.name] && !compatibility[s.name][p.name].compatible && compatibility[s.name][p.name].message
-                          ? `${s.name} × ${p.name}: ${compatibility[s.name][p.name].message}`
-                          : ''
-                      }
+                      class={compatibility[s.name]?.[p.name] ? (compatibility[s.name][p.name].compatible ? 'compat-cell ok' : 'compat-cell bad') : 'compat-cell neutral'}
+                      title={compatibility[s.name]?.[p.name] && !compatibility[s.name][p.name].compatible && compatibility[s.name][p.name].message ? `${s.name} × ${p.name}: ${compatibility[s.name][p.name].message}` : ''}
                     >&nbsp;</td>
                   {/each}
                 </tr>
               {/each}
             </tbody>
           </table>
-
           <div class="modal-actions" style="margin-top:0.75rem;">
             <button class="btn" on:click={closeCompatModal}>Close</button>
           </div>
@@ -1127,5 +1317,12 @@
     margin: 0 0 0.6rem 0;
     color: #6b7280;
     font-size: 0.9rem;
+  }
+
+  .col-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;        /* small consistent spacing between cards */
+    min-width: 0;
   }
 </style>
