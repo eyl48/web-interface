@@ -1,17 +1,60 @@
-from fastapi import FastAPI
+import uuid
+import threading
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
+import matplotlib.pyplot as plt
+from fastapi import Body, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from simopt.directory import (
-    problem_unabbreviated_directory,
-    solver_unabbreviated_directory,
-)
-from simopt.experiment_base import ProblemsSolvers
-from simopt.experiment_base import PlotProgressCurvesConfig, PlotType
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 import inspect
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from simopt import experiment_base as eb
 
+from simopt.directory import (
+    problem_unabbreviated_directory,
+    solver_unabbreviated_directory,
+    problem_directory,
+    solver_directory,
+)
+from simopt.experiment_base import ProblemsSolvers, PlotProgressCurvesConfig, PlotType
+
+
+class ProblemRequest(BaseModel):
+    name: str
+    rename: Optional[str] = None
+    fixed_factors: Dict[str, Any]
+    model_fixed_factors: Dict[str, Any] = {}
+
+
+class SolverRequest(BaseModel):
+    name: str
+    rename: Optional[str] = None
+    fixed_factors: Dict[str, Any]
+
+
+class PlotRequest(BaseModel):
+    plot_type: str
+    params: Dict[str, Any] = {}
+
+
+class ExperimentParams(BaseModel):
+    num_macroreps: int
+    num_postreps: int
+    num_postnorms: int
+
+
+class ExperimentRequest(BaseModel):
+    experiment_params: ExperimentParams
+    problems: List[ProblemRequest]
+    solvers: List[SolverRequest]
+    plots: List[PlotRequest]
+
+
 app = FastAPI(title="SimOpt API")
+Path("svelte-app/results").mkdir(exist_ok=True)
+app.mount("/results", StaticFiles(directory="results"), name="results")
 
 # Allow frontend access
 app.add_middleware(
@@ -28,18 +71,43 @@ except Exception:
     POST_REPLICATE_DEFAULTS = {}
     POST_NORMALIZE_DEFAULTS = {}
 
+
+def create_name_mappings():
+    """Create bidirectional mappings between abbreviated and full names."""
+    solver_abbr_to_full = {}
+    solver_full_to_abbr = {}
+    
+    for abbr_name in solver_directory.keys():
+        solver_cls = solver_directory[abbr_name]
+        full_name = getattr(solver_cls, 'class_name', abbr_name)
+        display_name = f"{abbr_name} ({full_name})" if full_name != abbr_name else abbr_name
+        solver_abbr_to_full[abbr_name] = display_name
+        solver_full_to_abbr[display_name] = abbr_name
+    
+    problem_abbr_to_full = {}
+    problem_full_to_abbr = {}
+    
+    for abbr_name in problem_directory.keys():
+        problem_cls = problem_directory[abbr_name]
+        full_name = getattr(problem_cls, 'class_name', abbr_name)
+        display_name = f"{abbr_name} ({full_name})" if full_name != abbr_name else abbr_name
+        problem_abbr_to_full[abbr_name] = display_name
+        problem_full_to_abbr[display_name] = abbr_name
+    
+    return solver_abbr_to_full, solver_full_to_abbr, problem_abbr_to_full, problem_full_to_abbr
+
+
+SOLVER_ABBR_TO_FULL, SOLVER_FULL_TO_ABBR, PROBLEM_ABBR_TO_FULL, PROBLEM_FULL_TO_ABBR = create_name_mappings()
+
+
 @app.get("/postreplicate_schema")
 def postreplicate_schema() -> Dict[str, Any]:
-    """
-    Returns a simple schema for the post-replicate form.
-    We try to pull defaults from experiment_base; otherwise we fall back.
-    """
+    """Returns a simple schema for the post-replicate form."""
     d = {
         "num_post_reps": 100,
         "crn_diff_times": True,
         "crn_diff_macroreps": True,
     }
-    # overlay with experiment_base values if present
     d.update(POST_REPLICATE_DEFAULTS or {})
     return {
         "params": [
@@ -64,11 +132,10 @@ def postreplicate_schema() -> Dict[str, Any]:
         ]
     }
 
+
 @app.get("/postnormalize_schema")
 def postnormalize_schema() -> Dict[str, Any]:
-    """
-    Returns a simple schema for the post-normalize form.
-    """
+    """Returns a simple schema for the post-normalize form."""
     d = {
         "num_post_reps_init_opt": 100,
         "crn_init_opt": True,
@@ -91,35 +158,31 @@ def postnormalize_schema() -> Dict[str, Any]:
         ]
     }
 
+
 @app.get("/plots")
 def list_plots():
-    """
-    Returns a flat list of plot names derived from experiment_base.PlotType.
-    """
+    """Returns a flat list of plot names derived from experiment_base.PlotType."""
     if not hasattr(eb, "PlotType"):
-        # Keep this graceful so UI can handle it
         return {"plots": [], "source": "missing PlotType"}
 
     PlotType = getattr(eb, "PlotType")
 
-    # Try normal Enum iteration first
     plots = []
     try:
-        plots = [member.name for member in PlotType]  # works if PlotType is an Enum
+        plots = [member.name for member in PlotType]
         source = "enum"
     except TypeError:
-        # If PlotType isn't an Enum, fall back to uppercase attributes (constants-style)
         plots = [n for n in dir(PlotType) if n.isupper()]
         source = "class-attrs"
 
     return {"plots": plots, "source": source}
+
 
 def extract_params_from_config(config_cls):
     """Extract parameter info (name, default, description) from a Pydantic BaseModel config."""
     params = []
     if config_cls and hasattr(config_cls, "model_fields"):
         for name, field in config_cls.model_fields.items():
-            # Handle callable defaults (default_factory)
             default = None
             if field.default_factory is not None:
                 try:
@@ -139,21 +202,24 @@ def extract_params_from_config(config_cls):
     return params
 
 
-@app.get("/problems")
-def get_problems():
-    """Return all available problems."""
-    return {"problems": list(problem_unabbreviated_directory.keys())}
-
-
 @app.get("/solvers")
 def get_solvers():
-    """Return all available solvers."""
-    return {"solvers": list(solver_unabbreviated_directory.keys())}
+    """Return all available solvers with display names."""
+    return {"solvers": list(SOLVER_ABBR_TO_FULL.values())}
+
+
+@app.get("/problems")
+def get_problems():
+    """Return all available problems with display names."""
+    return {"problems": list(PROBLEM_ABBR_TO_FULL.values())}
 
 
 @app.get("/solver_params/{solver_name}")
 def get_solver_params(solver_name: str):
-    solver_cls = solver_unabbreviated_directory.get(solver_name)
+    """Return parameters for a solver (accepts display name)."""
+    # Convert display name to abbreviated name
+    abbr_name = SOLVER_FULL_TO_ABBR.get(solver_name, solver_name)
+    solver_cls = solver_directory.get(abbr_name)
     if solver_cls is None:
         return {"parameters": []}
 
@@ -166,24 +232,22 @@ def get_solver_params(solver_name: str):
 
 @app.get("/problem_params/{problem_name}")
 def get_problem_params(problem_name: str):
-    """Return parameters for both the problem and its model config."""
-    problem_cls = problem_unabbreviated_directory.get(problem_name)
+    """Return parameters for both the problem and its model config (accepts display name)."""
+    # Convert display name to abbreviated name
+    abbr_name = PROBLEM_FULL_TO_ABBR.get(problem_name, problem_name)
+    problem_cls = problem_directory.get(abbr_name)
     if problem_cls is None:
         return {"parameters": []}
 
     params = []
-    # Get parameters from problem’s own config class
     config_cls = getattr(problem_cls, "config_class", None)
     params += extract_params_from_config(config_cls)
 
-    # Check if the problem defines a model_class or model attribute
     model_cls = getattr(problem_cls, "model_class", None)
     if model_cls is not None:
         model_config_cls = getattr(model_cls, "config_class", None)
         params += extract_params_from_config(model_config_cls)
     else:
-        # Some problems instantiate model directly inside __init__
-        # Try to find it dynamically
         try:
             sig = inspect.signature(problem_cls)
             if "model" in sig.parameters:
@@ -198,46 +262,288 @@ def get_problem_params(problem_name: str):
 
 @app.get("/plot_params/{plot_name}")
 def get_plot_params(plot_name: str):
-    """
-    Return parameter specs for plots that need them.
-    For now, only MEAN (progress curves) exposes parameters to the UI.
-    """
+    """Return parameter specs for plots that need them."""
     name = plot_name.strip().upper()
     if name == "MEAN":
         return {"parameters": extract_params_from_config(PlotProgressCurvesConfig)}
-    # No params for other plot types right now
     return {"parameters": []}
 
 
 @app.post("/check_compatibility")
 def check_compatibility(payload: dict):
+    """Check compatibility between solvers and problems."""
     solvers = payload.get("solvers", [])
     problems = payload.get("problems", [])
 
     compatibility = {}
 
-    for solver_name in solvers:
-        solver_cls = solver_unabbreviated_directory.get(solver_name)
+    for display_name in solvers:
+        abbr_name = SOLVER_FULL_TO_ABBR.get(display_name, display_name)
+        solver_cls = solver_directory.get(abbr_name)
         if not solver_cls:
             continue
         solver = solver_cls()
-        compatibility[solver_name] = {}
+        compatibility[display_name] = {}
 
-        for problem_name in problems:
-            problem_cls = problem_unabbreviated_directory.get(problem_name)
+        for prob_display_name in problems:
+            prob_abbr_name = PROBLEM_FULL_TO_ABBR.get(prob_display_name, prob_display_name)
+            problem_cls = problem_directory.get(prob_abbr_name)
             if not problem_cls:
                 continue
             problem = problem_cls()
 
-            # --- Create temporary experiment ---
             try:
                 exp = ProblemsSolvers(solvers=[solver], problems=[problem])
                 err = exp.check_compatibility()
                 if err.strip() == "":
-                    compatibility[solver_name][problem_name] = {"compatible": True, "message": ""}
+                    compatibility[display_name][prob_display_name] = {"compatible": True, "message": ""}
                 else:
-                    compatibility[solver_name][problem_name] = {"compatible": False, "message": err}
+                    compatibility[display_name][prob_display_name] = {"compatible": False, "message": err}
             except Exception as e:
-                compatibility[solver_name][problem_name] = {"compatible": False, "message": str(e)}
+                compatibility[display_name][prob_display_name] = {"compatible": False, "message": str(e)}
 
     return {"compatibility": compatibility}
+
+
+@app.get("/debug/directories")
+def debug_directories():
+    """Debug endpoint to see what's in the directories."""
+    return {
+        "solvers_display": list(SOLVER_ABBR_TO_FULL.values())[:10],
+        "problems_display": list(PROBLEM_ABBR_TO_FULL.values())[:10],
+        "solver_mapping_sample": dict(list(SOLVER_FULL_TO_ABBR.items())[:3]),
+        "problem_mapping_sample": dict(list(PROBLEM_FULL_TO_ABBR.items())[:3]),
+    }
+
+
+def run_experiment_async(run_id: str, payload: dict):
+    """Run the experiment in a background thread."""
+    folder = Path("svelte-app/results") / run_id
+    
+    try:
+        update_status(folder, "Running experiments...")
+        
+        exp_params = payload.get("experiment_params", {})
+        num_macroreps = exp_params.get("num_macroreps", 10)
+        num_postreps = exp_params.get("num_postreps", 100)
+        num_postnorms = exp_params.get("num_postnorms", 200)
+        
+        problems_config = payload.get("problems", [])
+        solvers_config = payload.get("solvers", [])
+        
+        # Convert display names to abbreviated names
+        for solver_cfg in solvers_config:
+            display_name = solver_cfg["name"]
+            abbr_name = SOLVER_FULL_TO_ABBR.get(display_name, display_name)
+            solver_cfg["name"] = abbr_name
+            print(f"Converted solver: '{display_name}' -> '{abbr_name}'")
+        
+        for prob_cfg in problems_config:
+            display_name = prob_cfg["name"]
+            abbr_name = PROBLEM_FULL_TO_ABBR.get(display_name, display_name)
+            prob_cfg["name"] = abbr_name
+            print(f"Converted problem: '{display_name}' -> '{abbr_name}'")
+        
+        from simopt.experiment_base import ProblemSolver, post_normalize
+        
+        # Validate solver and problem names
+        for solver_cfg in solvers_config:
+            if solver_cfg["name"] not in solver_directory:
+                raise ValueError(f"Solver '{solver_cfg['name']}' not found in solver directory. Available solvers: {list(solver_directory.keys())[:10]}")
+        
+        for prob_cfg in problems_config:
+            if prob_cfg["name"] not in problem_directory:
+                raise ValueError(f"Problem '{prob_cfg['name']}' not found in problem directory. Available problems: {list(problem_directory.keys())[:10]}")
+        
+        # Run experiments for each problem
+        all_experiments = []
+        for prob_idx, prob_cfg in enumerate(problems_config):
+            update_status(folder, f"Running problem {prob_idx + 1}/{len(problems_config)}: {prob_cfg['name']}...")
+            
+            experiments_same_problem = []
+            
+            for solver_cfg in solvers_config:
+                print(f"Creating ProblemSolver with solver={solver_cfg['name']}, problem={prob_cfg['name']}")
+                print(f"  Solver factors: {solver_cfg.get('fixed_factors', {})}")
+                print(f"  Problem factors: {prob_cfg.get('fixed_factors', {})}")
+                
+                experiment = ProblemSolver(
+                    solver_name=solver_cfg["name"],
+                    solver_rename=solver_cfg.get("rename", solver_cfg["name"]),
+                    solver_fixed_factors=solver_cfg.get("fixed_factors", {}),
+                    problem_name=prob_cfg["name"],
+                    problem_rename=prob_cfg.get("rename", prob_cfg["name"]),
+                    problem_fixed_factors=prob_cfg.get("fixed_factors", {}),
+                    model_fixed_factors=prob_cfg.get("model_fixed_factors", {}),
+                )
+                
+                print(f"Running experiment with {num_macroreps} macroreps...")
+                experiment.run(n_macroreps=num_macroreps)
+                print(f"Post-replicating with {num_postreps} postreps...")
+                experiment.post_replicate(n_postreps=num_postreps)
+                experiments_same_problem.append(experiment)
+            
+            # Post-normalize
+            print(f"Post-normalizing with {num_postnorms} postnorms...")
+            post_normalize(
+                experiments=experiments_same_problem,
+                n_postreps_init_opt=num_postnorms,
+            )
+            
+            all_experiments.append(experiments_same_problem)
+        
+        # Organize experiments by solver
+        update_status(folder, "Organizing results...")
+        experiment_dict = {}
+        for exp_problem_list in all_experiments:
+            for experiment in exp_problem_list:
+                key = experiment.solver.name
+                if key not in experiment_dict:
+                    experiment_dict[key] = []
+                experiment_dict[key].append(experiment)
+        
+        experiments = list(experiment_dict.values())
+        
+        # Generate plots
+        update_status(folder, "Generating plots...")
+        plot_files = []
+        
+        from simopt.experiment_base import PlotType, plot_progress_curves
+        
+        # Generate MEAN progress curves for each problem
+        n_solvers = len(solvers_config)
+        for i in range(len(experiments[0])):
+            try:
+                print(f"Generating plot {i+1}/{len(experiments[0])}...")
+                plt.figure(figsize=(10, 6))
+                plot_progress_curves(
+                    [experiments[solver_idx][i] for solver_idx in range(n_solvers)],
+                    plot_type=PlotType.MEAN,
+                    all_in_one=True,
+                )
+                filename = f"progress_curves_problem_{i+1}.png"
+                plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                plt.close()
+                plot_files.append(filename)
+                print(f"  Saved {filename}")
+            except Exception as e:
+                print(f"Error generating plot for problem {i+1}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        # Create final results page with plots
+        update_status(folder, "Complete!", plot_files)
+        print(f"Experiment {run_id} completed successfully!")
+        
+    except Exception as e:
+        error_msg = f"Error: {str(e)}"
+        update_status(folder, error_msg)
+        print(f"Experiment {run_id} failed: {error_msg}")
+        import traceback
+        traceback.print_exc()
+
+
+def update_status(folder: Path, status: str, plot_files: list = None):
+    """Update the results page with current status and plots."""
+    run_id = folder.name
+    
+    plots_html = ""
+    if plot_files:
+        plots_html = '<div id="plots" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;">'
+        for plot_file in plot_files:
+            plots_html += f'''
+            <div class="plot-container">
+                <img src="{plot_file}" alt="{plot_file}">
+                <p style="text-align: center; margin-top: 0.5rem; color: #6b7280; font-size: 0.9rem;">{plot_file}</p>
+            </div>
+            '''
+        plots_html += '</div>'
+    
+    status_class = "success" if status == "Complete!" else ("error" if status.startswith("Error:") else "running")
+    
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Experiment Results - {run_id}</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: 'Inter', sans-serif; background: #f9fafb; min-height: 100vh; }}
+        .header {{ background: #e5e7eb; padding: 1.5rem 2rem; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); margin-bottom: 2rem; }}
+        .header h1 {{ color: #0f172a; font-size: 2rem; font-weight: 700; }}
+        .container {{ max-width: 1400px; margin: 0 auto; padding: 0 2rem 2rem; }}
+        .card {{ background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); margin-bottom: 1.5rem; }}
+        .card h2 {{ color: #2563eb; font-size: 1.2rem; margin-bottom: 1rem; }}
+        .status {{ padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }}
+        .status.running {{ background: #eff6ff; border: 1px solid #93c5fd; }}
+        .status.success {{ background: #dcfce7; border: 1px solid #86efac; }}
+        .status.error {{ background: #fee2e2; border: 1px solid #fca5a5; }}
+        .status p {{ margin: 0.5rem 0; }}
+        .status.running p {{ color: #1e40af; }}
+        .status.success p {{ color: #166534; }}
+        .status.error p {{ color: #991b1b; }}
+        .status strong {{ font-weight: 600; }}
+        .plot-container {{ background: white; padding: 1rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }}
+        .plot-container img {{ width: 100%; height: auto; border-radius: 4px; display: block; }}
+    </style>
+    <script>
+        // Auto-refresh while running
+        if ("{status_class}" === "running") {{
+            setTimeout(() => location.reload(), 3000);
+        }}
+    </script>
+</head>
+<body>
+    <div class="header"><h1>Results</h1></div>
+    <div class="container">
+        <div class="card">
+            <h2>Experiment Details</h2>
+            <div class="status {status_class}">
+                <p><strong>Experiment ID:</strong> {run_id}</p>
+                <p><strong>Status:</strong> {status}</p>
+            </div>
+        </div>
+        {plots_html}
+    </div>
+</body>
+</html>"""
+    
+    with open(folder / "index.html", "w") as f:
+        f.write(html_content)
+
+
+@app.post("/api/run")
+def run_experiment(payload: dict = Body(...)):
+    run_id = str(uuid.uuid4())
+    folder = Path("svelte-app/results") / run_id
+    folder.mkdir(parents=True, exist_ok=True)
+    
+    # Log the payload for debugging
+    print("\n" + "="*60)
+    print("RECEIVED EXPERIMENT REQUEST")
+    print("="*60)
+    print(f"Experiment ID: {run_id}")
+    print(f"\nSolvers: {[s['name'] for s in payload.get('solvers', [])]}")
+    print(f"Problems: {[p['name'] for p in payload.get('problems', [])]}")
+    print("="*60 + "\n")
+    
+    # Create initial status page
+    update_status(folder, "Initializing...")
+    
+    # Start experiment in background thread
+    thread = threading.Thread(target=run_experiment_async, args=(run_id, payload))
+    thread.daemon = True
+    thread.start()
+    
+    return {"id": run_id}
+
+
+@app.get("/api/results/{experiment_id}")
+def get_results(experiment_id: str):
+    """Get results for an experiment."""
+    path = Path(f"svelte-app/results/{experiment_id}")
+    images = [f"svelte-app/results/{experiment_id}/{p.name}" for p in path.glob("*.png")]
+    return {"images": images}

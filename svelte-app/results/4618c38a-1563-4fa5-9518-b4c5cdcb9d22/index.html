@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Experiment Results - 4618c38a-1563-4fa5-9518-b4c5cdcb9d22</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: #f9fafb; min-height: 100vh; }
+        .header { background: #e5e7eb; padding: 1.5rem 2rem; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); margin-bottom: 2rem; }
+        .header h1 { color: #0f172a; font-size: 2rem; font-weight: 700; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 0 2rem 2rem; }
+        .card { background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); margin-bottom: 1.5rem; }
+        .card h2 { color: #2563eb; font-size: 1.2rem; margin-bottom: 1rem; }
+        .status { padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+        .status.running { background: #eff6ff; border: 1px solid #93c5fd; }
+        .status.success { background: #dcfce7; border: 1px solid #86efac; }
+        .status.error { background: #fee2e2; border: 1px solid #fca5a5; }
+        .status p { margin: 0.5rem 0; }
+        .status.running p { color: #1e40af; }
+        .status.success p { color: #166534; }
+        .status.error p { color: #991b1b; }
+        .status strong { font-weight: 600; }
+        .plot-container { background: white; padding: 1rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
+        .plot-container img { width: 100%; height: auto; border-radius: 4px; display: block; }
+    </style>
+    <script>
+        // Auto-refresh while running
+        if ("success" === "running") {
+            setTimeout(() => location.reload(), 3000);
+        }
+    </script>
+</head>
+<body>
+    <div class="header"><h1>Results</h1></div>
+    <div class="container">
+        <div class="card">
+            <h2>Experiment Details</h2>
+            <div class="status success">
+                <p><strong>Experiment ID:</strong> 4618c38a-1563-4fa5-9518-b4c5cdcb9d22</p>
+                <p><strong>Status:</strong> Complete!</p>
+            </div>
+        </div>
+        <div id="plots" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;">
+            <div class="plot-container">
+                <img src="progress_curves_problem_1.png" alt="progress_curves_problem_1.png">
+                <p style="text-align: center; margin-top: 0.5rem; color: #6b7280; font-size: 0.9rem;">progress_curves_problem_1.png</p>
+            </div>
+            </div>
+    </div>
+</body>
+</html>

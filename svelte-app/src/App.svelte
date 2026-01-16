@@ -219,6 +219,77 @@
     }
   }
 
+  async function runExperiment() {
+    // Validate that we have at least one solver and problem
+    if (summarySolvers.length === 0) {
+      alert("Please add at least one solver before running the experiment.");
+      return;
+    }
+    if (summaryProblems.length === 0) {
+      alert("Please add at least one problem before running the experiment.");
+      return;
+    }
+
+    // Parse parameter values (handle JSON strings)
+    const parseValue = (val) => {
+      if (val === null || val === undefined || val === "") return null;
+      try {
+        return JSON.parse(val);
+      } catch {
+        return val;
+      }
+    };
+
+    // Build the experiment payload
+    const payload = {
+      experiment_params: {
+        num_macroreps: macroreps,
+        num_postreps: prValues.num_post_reps || 100,
+        num_postnorms: pnValues.num_post_reps_init_opt || 100
+      },
+      problems: summaryProblems.map(p => ({
+        name: p.name,
+        rename: p.name,
+        fixed_factors: p.params.reduce((acc, param) => {
+          const parsed = parseValue(param.value);
+          if (parsed !== null) acc[param.name] = parsed;
+          return acc;
+        }, {}),
+        model_fixed_factors: {}
+      })),
+      solvers: summarySolvers.map(s => ({
+        name: s.name,
+        rename: s.name,
+        fixed_factors: s.params.reduce((acc, param) => {
+          const parsed = parseValue(param.value);
+          if (parsed !== null) acc[param.name] = parsed;
+          return acc;
+        }, {})
+      }))
+    };
+
+    try {
+      const res = await fetch("http://localhost:8000/api/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        alert("Failed to start experiment");
+        return;
+      }
+
+      const data = await res.json();
+      
+      // Open results page in new window
+      window.open(`/results/${data.id}/index.html`, '_blank');
+    } catch (error) {
+      console.error("Error running experiment:", error);
+      alert("Failed to start experiment: " + error.message);
+    }
+  }
+
   onMount(async () => {
     await loadPostFixedForms();
     try {
@@ -704,7 +775,7 @@
     </div>
 
     <div class="button-row">
-      <button class="cta" on:click={() => console.log('Run Experiment payload coming soon…')}>Run Experiment</button>
+      <button class="primary" on:click={runExperiment}>Run Experiment</button>
     </div>
 
     <!-- === Modals (unchanged) === -->
