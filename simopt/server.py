@@ -53,7 +53,7 @@ class ExperimentRequest(BaseModel):
 
 
 app = FastAPI(title="SimOpt API")
-Path("svelte-app/results").mkdir(exist_ok=True)
+Path("results").mkdir(exist_ok=True)
 app.mount("/results", StaticFiles(directory="results"), name="results")
 
 # Allow frontend access
@@ -517,7 +517,7 @@ def update_status(folder: Path, status: str, plot_files: list = None):
 
 @app.post("/api/run")
 def run_experiment(payload: dict = Body(...)):
-    run_id = str(uuid.uuid4())
+    run_id = str(uuid.uuid4()) #datetime
     folder = Path("svelte-app/results") / run_id
     folder.mkdir(parents=True, exist_ok=True)
     

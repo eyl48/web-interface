@@ -1532,12 +1532,12 @@ def bootstrap_procedure(
         bs_conf_int_upper_bound_list.append(bs_conf_int_upper_bound)
     # Create the curves for the lower and upper bounds of the bootstrap
     # confidence intervals.
-    unique_budget_list_floats = [float(val) for val in unique_budget_list]
-    lower_bound_list = [float(val) for val in bs_conf_int_lower_bound_list]
+    unique_budget_list_floats = [float(val.item()) for val in unique_budget_list]
+    lower_bound_list = [float(val.item()) for val in bs_conf_int_lower_bound_list]
     bs_conf_int_lower_bounds = Curve(
         x_vals=unique_budget_list_floats, y_vals=lower_bound_list
     )
-    upper_bound_list = [float(val) for val in bs_conf_int_upper_bound_list]
+    upper_bound_list = [float(val.item()) for val in bs_conf_int_upper_bound_list]
     bs_conf_int_upper_bounds = Curve(
         x_vals=unique_budget_list_floats, y_vals=upper_bound_list
     )
