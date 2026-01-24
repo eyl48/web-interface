@@ -11,6 +11,7 @@ import inspect
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from simopt import experiment_base as eb
+import seaborn as sns
 
 from simopt.directory import (
     problem_unabbreviated_directory,
@@ -18,7 +19,7 @@ from simopt.directory import (
     problem_directory,
     solver_directory,
 )
-from simopt.experiment_base import ProblemsSolvers, PlotProgressCurvesConfig, PlotType
+from simopt.experiment_base import ProblemsSolvers, PlotProgressCurvesConfig, PlotTerminalProgressCurvesConfig
 
 
 class ProblemRequest(BaseModel):
@@ -266,6 +267,8 @@ def get_plot_params(plot_name: str):
     name = plot_name.strip().upper()
     if name == "MEAN":
         return {"parameters": extract_params_from_config(PlotProgressCurvesConfig)}
+    elif name == "VIOLIN":
+        return {"parameters": extract_params_from_config(PlotTerminalProgressCurvesConfig)}
     return {"parameters": []}
 
 
@@ -408,29 +411,71 @@ def run_experiment_async(run_id: str, payload: dict):
         update_status(folder, "Generating plots...")
         plot_files = []
         
-        from simopt.experiment_base import PlotType, plot_progress_curves
+        from simopt.experiment_base import PlotType, plot_progress_curves, plot_terminal_progress
         
-        # Generate MEAN progress curves for each problem
-        n_solvers = len(solvers_config)
-        for i in range(len(experiments[0])):
-            try:
-                print(f"Generating plot {i+1}/{len(experiments[0])}...")
-                plt.figure(figsize=(10, 6))
-                plot_progress_curves(
-                    [experiments[solver_idx][i] for solver_idx in range(n_solvers)],
-                    plot_type=PlotType.MEAN,
-                    all_in_one=True,
-                )
-                filename = f"progress_curves_problem_{i+1}.png"
-                plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
-                plt.close()
-                plot_files.append(filename)
-                print(f"  Saved {filename}")
-            except Exception as e:
-                print(f"Error generating plot for problem {i+1}: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
+        plots_config = payload.get("plots", [])
+        
+        # If no plots specified, default to MEAN
+        if not plots_config:
+            plots_config = [{"plot_type": "MEAN", "params": {}}]
+        
+        # Generate plots based on configuration
+        for plot_cfg in plots_config:
+            plot_type_name = plot_cfg.get("plot_type", "MEAN").upper()
+            plot_params = plot_cfg.get("params", {})
+            
+            n_solvers = len(solvers_config)
+            
+            if plot_type_name == "MEAN":
+                # Generate MEAN progress curves for each problem
+                for i in range(len(experiments[0])):
+                    try:
+                        print(f"Generating MEAN plot {i+1}/{len(experiments[0])}...")
+                        plt.figure(figsize=(10, 6))
+                        plot_progress_curves(
+                            [experiments[solver_idx][i] for solver_idx in range(n_solvers)],
+                            plot_type=PlotType.MEAN,
+                            all_in_one=plot_params.get("all_in_one", True),
+                            normalize=plot_params.get("normalize", False),
+                        )
+                        filename = f"mean_progress_curves_problem_{i+1}.png"
+                        plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                        plt.close()
+                        plot_files.append(filename)
+                        print(f"  Saved {filename}")
+                    except Exception as e:
+                        print(f"Error generating MEAN plot for problem {i+1}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+            
+            elif plot_type_name == "VIOLIN":
+                # Generate VIOLIN plots for each problem
+                for i in range(len(experiments[0])):
+                    try:
+                        print(f"Generating VIOLIN plot {i+1}/{len(experiments[0])}...")
+                        plt.figure(figsize=(10, 6))
+                        
+                        # Extract parameters with defaults
+                        normalize = plot_params.get("normalize", True)
+                        all_in_one = plot_params.get("all_in_one", True)
+                        
+                        plot_terminal_progress(
+                            [experiments[solver_idx][i] for solver_idx in range(n_solvers)],
+                            plot_type=PlotType.VIOLIN,
+                            normalize=normalize,
+                            all_in_one=all_in_one,
+                        )
+                        filename = f"violin_terminal_progress_problem_{i+1}.png"
+                        plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                        plt.close()
+                        plot_files.append(filename)
+                        print(f"  Saved {filename}")
+                    except Exception as e:
+                        print(f"Error generating VIOLIN plot for problem {i+1}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
         
         # Create final results page with plots
         update_status(folder, "Complete!", plot_files)
@@ -517,7 +562,8 @@ def update_status(folder: Path, status: str, plot_files: list = None):
 
 @app.post("/api/run")
 def run_experiment(payload: dict = Body(...)):
-    run_id = str(uuid.uuid4()) #datetime
+    from datetime import datetime
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     folder = Path("svelte-app/results") / run_id
     folder.mkdir(parents=True, exist_ok=True)
     

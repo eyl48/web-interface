@@ -51,7 +51,7 @@
 
   async function onPlotChange(name) {
     selectedPlotName = name;
-    plotParams = (name === "MEAN") ? await fetchPlotParams(name) : [];
+    plotParams = name ? await fetchPlotParams(name) : [];
   }
 
   function deepCopyParams(arr) {
@@ -261,6 +261,14 @@
         name: s.name,
         rename: s.name,
         fixed_factors: s.params.reduce((acc, param) => {
+          const parsed = parseValue(param.value);
+          if (parsed !== null) acc[param.name] = parsed;
+          return acc;
+        }, {})
+      })),
+      plots: summaryPlots.map(pl => ({
+        plot_type: pl.name,
+        params: pl.params.reduce((acc, param) => {
           const parsed = parseValue(param.value);
           if (parsed !== null) acc[param.name] = parsed;
           return acc;
@@ -509,9 +517,9 @@
             </select>
           </div>
 
-          {#if selectedPlotName === "MEAN" && plotParams.length}
+          {#if plotParams.length}
             <div class="param-box" style="margin-top:.5rem;">
-              <p class="param-title">Plot Parameters (MEAN)</p>
+              <p class="param-title">Plot Parameters ({selectedPlotName})</p>
               {#each plotParams as p, i}
                 <label>
                   <div style="display:flex;align-items:center;gap:0.4rem;">

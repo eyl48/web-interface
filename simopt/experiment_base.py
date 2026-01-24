@@ -3245,6 +3245,67 @@ def plot_solvability_profiles(
                         )
     return file_list
 
+class PlotTerminalProgressCurvesConfig(BaseModel):
+    """
+    Options for experiment_base.plot_progress_curves (excluding `experiments`).
+    """
+
+    plot_type: Annotated[
+        PlotType,
+        Field(
+            default=PlotType.VIOLIN,
+            description="Type of plot to produce.",
+        ),
+    ]
+
+    normalize: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="If True, normalize curves by optimality gaps.",
+        ),
+    ]
+
+    all_in_one: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="If True, plot all curves in one figure.",
+        ),
+    ]
+
+    plot_title: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description="Custom plot title (used only if all_in_one=True).",
+        ),
+    ]
+
+    ext: Annotated[
+        str,
+        Field(
+            default=".png",
+            description='File extension for saved plots (e.g., ".png").',
+        ),
+    ]
+
+    save_as_pickle: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="If True, also save a pickle of the plot.",
+        ),
+    ]
+
+    solver_set_name: Annotated[
+        str,
+        Field(
+            default="SOLVER_SET",
+            description='Label for solver group in plot titles.',
+            min_length=1,
+        ),
+    ]
 
 def plot_terminal_progress(
     experiments: list[ProblemSolver],
