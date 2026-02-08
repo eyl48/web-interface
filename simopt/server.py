@@ -19,7 +19,7 @@ from simopt.directory import (
     problem_directory,
     solver_directory,
 )
-from simopt.experiment_base import ProblemsSolvers, PlotProgressCurvesConfig, PlotTerminalProgressCurvesConfig
+from simopt.experiment_base import ProblemsSolvers, PlotProgressCurvesConfig, PlotTerminalProgressCurvesConfig, PlotSolvabilityCDFConfig, PlotTerminalScatterplotsConfig
 
 
 class ProblemRequest(BaseModel):
@@ -265,10 +265,14 @@ def get_problem_params(problem_name: str):
 def get_plot_params(plot_name: str):
     """Return parameter specs for plots that need them."""
     name = plot_name.strip().upper()
-    if name == "MEAN":
+    if name in ["ALL", "MEAN", "QUANTILE"]:
         return {"parameters": extract_params_from_config(PlotProgressCurvesConfig)}
-    elif name == "VIOLIN":
+    elif name in ["VIOLIN", "BOX"]:
         return {"parameters": extract_params_from_config(PlotTerminalProgressCurvesConfig)}
+    elif name == "SOLVE_TIME_CDF":
+        return {"parameters": extract_params_from_config(PlotSolvabilityCDFConfig)}
+    elif name == "TERMINAL_SCATTER":
+        return {"parameters": extract_params_from_config(PlotTerminalScatterplotsConfig)}
     return {"parameters": []}
 
 
@@ -426,56 +430,140 @@ def run_experiment_async(run_id: str, payload: dict):
             
             n_solvers = len(solvers_config)
             
-            if plot_type_name == "MEAN":
-                # Generate MEAN progress curves for each problem
+            if plot_type_name in ["ALL", "MEAN", "QUANTILE"]:
+                # Generate progress curves for each problem
                 for i in range(len(experiments[0])):
                     try:
-                        print(f"Generating MEAN plot {i+1}/{len(experiments[0])}...")
+                        print(f"Generating {plot_type_name} plot {i+1}/{len(experiments[0])}...")
                         plt.figure(figsize=(10, 6))
+
+                        all_in_one = plot_params.get("all_in_one", True)
+                        normalize = plot_params.get("normalize", False)
+
+                        plot_type_map = {
+                            "ALL": PlotType.ALL,
+                            "MEAN": PlotType.MEAN,
+                            "QUANTILE": PlotType.QUANTILE,
+                        }
+                        plot_type_enum = plot_type_map.get(plot_type_name, PlotType.MEAN)
+
                         plot_progress_curves(
                             [experiments[solver_idx][i] for solver_idx in range(n_solvers)],
-                            plot_type=PlotType.MEAN,
-                            all_in_one=plot_params.get("all_in_one", True),
-                            normalize=plot_params.get("normalize", False),
+                            plot_type=plot_type_enum,
+                            all_in_one=all_in_one,
+                            normalize=normalize,
                         )
-                        filename = f"mean_progress_curves_problem_{i+1}.png"
+                        filename = f"{plot_type_name.lower()}_progress_curves_problem_{i+1}.png"
                         plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
                         plt.close()
                         plot_files.append(filename)
                         print(f"  Saved {filename}")
                     except Exception as e:
-                        print(f"Error generating MEAN plot for problem {i+1}: {e}")
+                        print(f"Error generating {plot_type_name} plot for problem {i+1}: {e}")
                         import traceback
                         traceback.print_exc()
                         continue
             
-            elif plot_type_name == "VIOLIN":
-                # Generate VIOLIN plots for each problem
+            elif plot_type_name in ["VIOLIN", "BOX"]:
+                # Generate terminal progress plots (BOX or VIOLIN) for each problem
                 for i in range(len(experiments[0])):
                     try:
-                        print(f"Generating VIOLIN plot {i+1}/{len(experiments[0])}...")
+                        print(f"Generating {plot_type_name} plot {i+1}/{len(experiments[0])}...")
                         plt.figure(figsize=(10, 6))
                         
                         # Extract parameters with defaults
                         normalize = plot_params.get("normalize", True)
                         all_in_one = plot_params.get("all_in_one", True)
                         
+                        # Determine which PlotType to use
+                        plot_type_enum = PlotType.VIOLIN if plot_type_name == "VIOLIN" else PlotType.BOX
+                        
                         plot_terminal_progress(
                             [experiments[solver_idx][i] for solver_idx in range(n_solvers)],
-                            plot_type=PlotType.VIOLIN,
+                            plot_type=plot_type_enum,
                             normalize=normalize,
                             all_in_one=all_in_one,
                         )
-                        filename = f"violin_terminal_progress_problem_{i+1}.png"
+                        filename = f"{plot_type_name.lower()}_terminal_progress_problem_{i+1}.png"
                         plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
                         plt.close()
                         plot_files.append(filename)
                         print(f"  Saved {filename}")
                     except Exception as e:
-                        print(f"Error generating VIOLIN plot for problem {i+1}: {e}")
+                        print(f"Error generating {plot_type_name} plot for problem {i+1}: {e}")
                         import traceback
                         traceback.print_exc()
                         continue
+
+            elif plot_type_name == "SOLVE_TIME_CDF":
+                # Generate solvability CDF plots for each problem
+                for i in range(len(experiments[0])):
+                    try:
+                        print(f"Generating SOLVE_TIME_CDF plot {i+1}/{len(experiments[0])}...")
+                        plt.figure(figsize=(10, 6))
+                        
+                        # Extract parameters with defaults
+                        solve_tol = plot_params.get("solve_tol", 0.1)
+                        all_in_one = plot_params.get("all_in_one", True)
+                        n_bootstraps = plot_params.get("n_bootstraps", 100)
+                        conf_level = plot_params.get("conf_level", 0.95)
+                        plot_conf_ints = plot_params.get("plot_conf_ints", False)  # Disabled by default to avoid bootstrap errors
+                        print_max_hw = plot_params.get("print_max_hw", False)
+                        
+                        from simopt.experiment_base import plot_solvability_cdfs
+                        
+                        plot_solvability_cdfs(
+                            [experiments[solver_idx][i] for solver_idx in range(n_solvers)],
+                            solve_tol=solve_tol,
+                            all_in_one=all_in_one,
+                            n_bootstraps=n_bootstraps,
+                            conf_level=conf_level,
+                            plot_conf_ints=plot_conf_ints,
+                            print_max_hw=print_max_hw,
+                        )
+                        filename = f"solvability_cdf_problem_{i+1}.png"
+                        plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                        plt.close()
+                        plot_files.append(filename)
+                        print(f"  Saved {filename}")
+                    except Exception as e:
+                        print(f"Error generating SOLVE_TIME_CDF plot for problem {i+1}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+
+            elif plot_type_name == "TERMINAL_SCATTER":
+                # Generate terminal scatterplot (requires multiple problems)
+                if len(experiments[0]) < 2:
+                    print("Warning: TERMINAL_SCATTER requires multiple problems. Skipping.")
+                    continue
+                    
+                try:
+                    print(f"Generating TERMINAL_SCATTER plot...")
+                    plt.figure(figsize=(10, 6))
+                    
+                    # Extract parameters with defaults
+                    all_in_one = plot_params.get("all_in_one", True)
+                    solver_set_name = plot_params.get("solver_set_name", "SOLVER_SET")
+                    problem_set_name = plot_params.get("problem_set_name", "PROBLEM_SET")
+                    
+                    from simopt.experiment_base import plot_terminal_scatterplots
+                    
+                    plot_terminal_scatterplots(
+                        experiments,  # Pass the full experiments grid
+                        all_in_one=all_in_one,
+                        solver_set_name=solver_set_name,
+                        problem_set_name=problem_set_name,
+                    )
+                    filename = f"terminal_scatterplot.png"
+                    plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                    plt.close()
+                    plot_files.append(filename)
+                    print(f"  Saved {filename}")
+                except Exception as e:
+                    print(f"Error generating TERMINAL_SCATTER plot: {e}")
+                    import traceback
+                    traceback.print_exc()
         
         # Create final results page with plots
         update_status(folder, "Complete!", plot_files)
