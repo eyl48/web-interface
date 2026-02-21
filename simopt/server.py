@@ -19,7 +19,7 @@ from simopt.directory import (
     problem_directory,
     solver_directory,
 )
-from simopt.experiment_base import ProblemsSolvers, PlotProgressCurvesConfig, PlotTerminalProgressCurvesConfig, PlotSolvabilityCDFConfig, PlotTerminalScatterplotsConfig
+from simopt.experiment_base import ProblemsSolvers, PlotProgressCurvesConfig, PlotTerminalProgressCurvesConfig, PlotSolvabilityCDFConfig, PlotTerminalScatterplotsConfig, PlotSolvabilityProfilesConfig, PlotAreaScatterplotsConfig
 
 
 class ProblemRequest(BaseModel):
@@ -269,6 +269,10 @@ def get_plot_params(plot_name: str):
         return {"parameters": extract_params_from_config(PlotProgressCurvesConfig)}
     elif name in ["VIOLIN", "BOX"]:
         return {"parameters": extract_params_from_config(PlotTerminalProgressCurvesConfig)}
+    elif name in ["CDF_SOLVABILITY", "QUANTILE_SOLVABILITY", "DIFFERENCE_OF_CDF_SOLVABILITY", "DIFFERENCE_OF_QUANTILE_SOLVABILITY"]:
+        return {"parameters": extract_params_from_config(PlotSolvabilityProfilesConfig)}
+    elif name in ["AREA", "AREA_MEAN", "AREA_STD_DEV"]:
+        return {"parameters": extract_params_from_config(PlotAreaScatterplotsConfig)}
     elif name == "SOLVE_TIME_CDF":
         return {"parameters": extract_params_from_config(PlotSolvabilityCDFConfig)}
     elif name == "TERMINAL_SCATTER":
@@ -415,7 +419,7 @@ def run_experiment_async(run_id: str, payload: dict):
         update_status(folder, "Generating plots...")
         plot_files = []
         
-        from simopt.experiment_base import PlotType, plot_progress_curves, plot_terminal_progress
+        from simopt.experiment_base import PlotType, plot_progress_curves, plot_terminal_progress, plot_solvability_profiles, plot_solvability_cdfs, plot_terminal_scatterplots, plot_area_scatterplots
         
         plots_config = payload.get("plots", [])
         
@@ -495,6 +499,102 @@ def run_experiment_async(run_id: str, payload: dict):
                         traceback.print_exc()
                         continue
 
+            elif plot_type_name in ["AREA", "AREA_MEAN", "AREA_STD_DEV"]:
+                # Generate area scatterplots for each problem
+                if len(experiments[0]) < 2:
+                    print(f"Warning: {plot_type_name} requires multiple problems. Skipping.")
+                    continue
+                try:
+                    print(f"Generating {plot_type_name} plot...")
+                    plt.figure(figsize=(10, 6))
+                    # Extract parameters with defaults
+                    all_in_one = plot_params.get("all_in_one", True)
+                    n_bootstraps = plot_params.get("n_bootstraps", 100)
+                    conf_level = plot_params.get("conf_level", 0.95)
+                    plot_conf_ints = plot_params.get("plot_conf_ints", True)
+                    print_max_hw = plot_params.get("print_max_hw", True)
+                    solver_set_name = plot_params.get("solver_set_name", "SOLVER_SET")
+                    problem_set_name = plot_params.get("problem_set_name", "PROBLEM_SET")
+
+                    plot_type_map = {
+                        "AREA": PlotType.AREA,
+                        "AREA_MEAN": PlotType.AREA_MEAN,
+                        "AREA_STD_DEV": PlotType.AREA_STD_DEV
+                    }
+                    plot_type_enum = plot_type_map.get(plot_type_name)
+                                        
+                    plot_area_scatterplots(
+                        experiments,
+                        all_in_one=all_in_one,
+                        n_bootstraps=n_bootstraps,
+                        conf_level=conf_level,
+                        plot_conf_ints=plot_conf_ints,
+                        print_max_hw=print_max_hw,
+                        solver_set_name=solver_set_name,
+                        problem_set_name=problem_set_name,
+                    )
+                    filename = f"{plot_type_name.lower()}_area_scatterplot.png"
+                    plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                    plt.close()
+                    plot_files.append(filename)
+                    print(f"  Saved {filename}")
+                except Exception as e:
+                    print(f"Error generating {plot_type_name} plot: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            elif plot_type_name in ["CDF_SOLVABILITY", "QUANTILE_SOLVABILITY", "DIFFERENCE_OF_CDF_SOLVABILITY", "DIFFERENCE_OF_QUANTILE_SOLVABILITY"]:
+                # Solvability profiles require multiple problems
+                if len(experiments[0]) < 2:
+                    print(f"Warning: {plot_type_name} requires multiple problems. Skipping.")
+                    continue
+                try:
+                    print(f"Generating {plot_type_name} plot...")
+                    plt.figure(figsize=(10, 6))
+                    # Extract parameters with defaults
+                    all_in_one = plot_params.get("all_in_one", True)
+                    n_bootstraps = plot_params.get("n_bootstraps", 100)
+                    conf_level = plot_params.get("conf_level", 0.95)
+                    plot_conf_ints = plot_params.get("plot_conf_ints", False)  # Disabled by default
+                    print_max_hw = plot_params.get("print_max_hw", False)
+                    solve_tol = plot_params.get("solve_tol", 0.1)
+                    beta = plot_params.get("beta", 0.5)
+                    ref_solver = plot_params.get("ref_solver", None)
+                    solver_set_name = plot_params.get("solver_set_name", "SOLVER_SET")
+                    problem_set_name = plot_params.get("problem_set_name", "PROBLEM_SET")
+                    # Map plot type name to PlotType enum
+                    plot_type_map = {
+                        "CDF_SOLVABILITY": PlotType.CDF_SOLVABILITY,
+                        "QUANTILE_SOLVABILITY": PlotType.QUANTILE_SOLVABILITY,
+                        "DIFFERENCE_OF_CDF_SOLVABILITY": PlotType.DIFFERENCE_OF_CDF_SOLVABILITY,
+                        "DIFFERENCE_OF_QUANTILE_SOLVABILITY": PlotType.DIFFERENCE_OF_QUANTILE_SOLVABILITY,
+                    }
+                    plot_type_enum = plot_type_map.get(plot_type_name)
+                                        
+                    plot_solvability_profiles(
+                        experiments,  # Pass the full experiments grid
+                        plot_type=plot_type_enum,
+                        all_in_one=all_in_one,
+                        n_bootstraps=n_bootstraps,
+                        conf_level=conf_level,
+                        plot_conf_ints=plot_conf_ints,
+                        print_max_hw=print_max_hw,
+                        solve_tol=solve_tol,
+                        beta=beta,
+                        ref_solver=ref_solver,
+                        solver_set_name=solver_set_name,
+                        problem_set_name=problem_set_name,
+                    )
+                    filename = f"{plot_type_name.lower()}_solvability_profile.png"
+                    plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                    plt.close()
+                    plot_files.append(filename)
+                    print(f"  Saved {filename}")
+                except Exception as e:
+                    print(f"Error generating {plot_type_name} plot: {e}")
+                    import traceback
+                    traceback.print_exc()
+
             elif plot_type_name == "SOLVE_TIME_CDF":
                 # Generate solvability CDF plots for each problem
                 for i in range(len(experiments[0])):
@@ -509,9 +609,7 @@ def run_experiment_async(run_id: str, payload: dict):
                         conf_level = plot_params.get("conf_level", 0.95)
                         plot_conf_ints = plot_params.get("plot_conf_ints", False)  # Disabled by default to avoid bootstrap errors
                         print_max_hw = plot_params.get("print_max_hw", False)
-                        
-                        from simopt.experiment_base import plot_solvability_cdfs
-                        
+                                                
                         plot_solvability_cdfs(
                             [experiments[solver_idx][i] for solver_idx in range(n_solvers)],
                             solve_tol=solve_tol,
@@ -546,9 +644,7 @@ def run_experiment_async(run_id: str, payload: dict):
                     all_in_one = plot_params.get("all_in_one", True)
                     solver_set_name = plot_params.get("solver_set_name", "SOLVER_SET")
                     problem_set_name = plot_params.get("problem_set_name", "PROBLEM_SET")
-                    
-                    from simopt.experiment_base import plot_terminal_scatterplots
-                    
+                                        
                     plot_terminal_scatterplots(
                         experiments,  # Pass the full experiments grid
                         all_in_one=all_in_one,

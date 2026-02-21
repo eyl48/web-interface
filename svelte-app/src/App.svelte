@@ -739,14 +739,18 @@
         <!-- Compatibility + progress + full-width trigger -->
         {#if summarySolvers.length && summaryProblems.length}
           <div class="card compatibility-section compact">
-            <h3>Compatibility</h3>
+            <div class="compat-header">
+              <h3>Compatibility</h3>
+
+              {#if totalCompatCells > 0}
+                <span class="compat-header-pct">
+                  {greenPct}% compatible
+                </span>
+              {/if}
+            </div>
 
             {#if totalCompatCells > 0}
               <div class="compat-progress" aria-label="Compatibility summary">
-                <div class="compat-progress-header" style="display:flex;justify-content:space-between;align-items:center;">
-                  <span class="compat-progress-title">Incompatible</span>
-                  <span class="compat-progress-numbers"><strong>{redPct}%</strong> ({redCount}/{totalCompatCells})</span>
-                </div>
                 <div
                   class="compat-bar"
                   role="img"
