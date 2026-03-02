@@ -30,6 +30,8 @@
   let allPlots = [];
   let selectedPlotName = "";
   let plotParams = []; // [{name, description, default, value}]
+  let selectedPlotSolvers = []; // Array of solver names selected for this plot
+  let selectedPlotProblems = []; // Array of problem names selected for this plot
 
   function toDisplayString(val) {
     if (val === null || val === undefined) return "";
@@ -52,6 +54,9 @@
   async function onPlotChange(name) {
     selectedPlotName = name;
     plotParams = name ? await fetchPlotParams(name) : [];
+    // Reset selections when plot type changes
+    selectedPlotSolvers = [];
+    selectedPlotProblems = [];
   }
 
   function deepCopyParams(arr) {
@@ -131,11 +136,13 @@
   const removeSummarySolver = (i) => (summarySolvers = summarySolvers.filter((_, idx) => idx !== i));
   const removeSummaryProblem = (i) => (summaryProblems = summaryProblems.filter((_, idx) => idx !== i));
 
-  let summaryPlots = []; // [{ name, params:[{name, description, default, value}], expanded?:bool }]
+  let summaryPlots = []; // [{ name, params:[{name, description, default, value}], solvers:[], problems:[], expanded?:bool }]
 
   function resetPlotEditor() {
     selectedPlotName = "";
     plotParams = [];
+    selectedPlotSolvers = [];
+    selectedPlotProblems = [];
   }
 
   function addPlotToSummary() {
@@ -143,6 +150,8 @@
     const entry = {
       name: selectedPlotName,
       params: deepCopyParams(plotParams),
+      solvers: [...selectedPlotSolvers], // Copy the selected solvers
+      problems: [...selectedPlotProblems], // Copy the selected problems
       expanded: false
     };
     summaryPlots = [...summaryPlots, entry];
@@ -233,9 +242,15 @@
     // Parse parameter values (handle JSON strings)
     const parseValue = (val) => {
       if (val === null || val === undefined || val === "") return null;
+      
+      // If it's already not a string, return as-is
+      if (typeof val !== 'string') return val;
+      
+      // Try to parse as JSON first (handles arrays, objects, booleans, numbers)
       try {
         return JSON.parse(val);
       } catch {
+        // If JSON parse fails, return the string value
         return val;
       }
     };
@@ -272,7 +287,9 @@
           const parsed = parseValue(param.value);
           if (parsed !== null) acc[param.name] = parsed;
           return acc;
-        }, {})
+        }, {}),
+        solvers: pl.solvers && pl.solvers.length > 0 ? pl.solvers : null, // null means "all solvers"
+        problems: pl.problems && pl.problems.length > 0 ? pl.problems : null, // null means "all problems"
       }))
     };
 
@@ -538,6 +555,44 @@
                   />
                 </label>
               {/each}
+            </div>
+          {/if}
+
+          {#if selectedPlotName}
+            <div class="param-box" style="margin-top:.5rem;">
+              <p class="param-title">Select Solvers (leave empty for all)</p>
+              {#if summarySolvers.length === 0}
+                <p style="color:#6b7280;font-size:0.9rem;margin-top:0.25rem;">No solvers added yet</p>
+              {:else}
+                {#each summarySolvers as solver}
+                  <label style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;">
+                    <input
+                      type="checkbox"
+                      value={solver.name}
+                      bind:group={selectedPlotSolvers}
+                    />
+                    <span style="flex:1;">{solver.name}</span>
+                  </label>
+                {/each}
+              {/if}
+            </div>
+
+            <div class="param-box" style="margin-top:.5rem;">
+              <p class="param-title">Select Problems (leave empty for all)</p>
+              {#if summaryProblems.length === 0}
+                <p style="color:#6b7280;font-size:0.9rem;margin-top:0.25rem;">No problems added yet</p>
+              {:else}
+                {#each summaryProblems as problem}
+                  <label style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;">
+                    <input
+                      type="checkbox"
+                      value={problem.name}
+                      bind:group={selectedPlotProblems}
+                    />
+                    <span style="flex:1;">{problem.name}</span>
+                  </label>
+                {/each}
+              {/if}
             </div>
           {/if}
         </div>

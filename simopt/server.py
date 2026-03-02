@@ -341,6 +341,7 @@ def run_experiment_async(run_id: str, payload: dict):
         
         problems_config = payload.get("problems", [])
         solvers_config = payload.get("solvers", [])
+        plots_config = payload.get("plots", [])
         
         # Convert display names to abbreviated names
         for solver_cfg in solvers_config:
@@ -366,14 +367,45 @@ def run_experiment_async(run_id: str, payload: dict):
             if prob_cfg["name"] not in problem_directory:
                 raise ValueError(f"Problem '{prob_cfg['name']}' not found in problem directory. Available problems: {list(problem_directory.keys())[:10]}")
         
+        needed_solver_indices = set()
+        needed_problem_indices = set()
+        
+        for plot_cfg in plots_config:
+            plot_solvers = plot_cfg.get("solvers")
+            plot_problems = plot_cfg.get("problems")
+            
+            if plot_solvers:
+                plot_solver_abbrs = [SOLVER_FULL_TO_ABBR.get(s, s) for s in plot_solvers]
+                for i, s in enumerate(solvers_config):
+                    if s["name"] in plot_solver_abbrs:
+                        needed_solver_indices.add(i)
+            else:
+                needed_solver_indices.update(range(len(solvers_config)))
+            
+            if plot_problems:
+                plot_problem_abbrs = [PROBLEM_FULL_TO_ABBR.get(p, p) for p in plot_problems]
+                for i, p in enumerate(problems_config):
+                    if p["name"] in plot_problem_abbrs:
+                        needed_problem_indices.add(i)
+            else:
+                needed_problem_indices.update(range(len(problems_config)))
+        
+        # Convert to sorted lists
+        needed_solver_indices = sorted(list(needed_solver_indices))
+        needed_problem_indices = sorted(list(needed_problem_indices))
+        
+        print(f"Running experiments for {len(needed_solver_indices)} solvers and {len(needed_problem_indices)} problems")
+
         # Run experiments for each problem
         all_experiments = []
-        for prob_idx, prob_cfg in enumerate(problems_config):
-            update_status(folder, f"Running problem {prob_idx + 1}/{len(problems_config)}: {prob_cfg['name']}...")
+        for prob_idx in needed_problem_indices:
+            prob_cfg = problems_config[prob_idx]
+            update_status(folder, f"Running problem {prob_idx + 1}: {prob_cfg['name']}...")
             
             experiments_same_problem = []
             
-            for solver_cfg in solvers_config:
+            for solver_idx in needed_solver_indices:
+                solver_cfg = solvers_config[solver_idx]
                 print(f"Creating ProblemSolver with solver={solver_cfg['name']}, problem={prob_cfg['name']}")
                 print(f"  Solver factors: {solver_cfg.get('fixed_factors', {})}")
                 print(f"  Problem factors: {prob_cfg.get('fixed_factors', {})}")
@@ -402,43 +434,43 @@ def run_experiment_async(run_id: str, payload: dict):
             )
             
             all_experiments.append(experiments_same_problem)
-        
-        # Organize experiments by solver
-        update_status(folder, "Organizing results...")
-        experiment_dict = {}
-        for exp_problem_list in all_experiments:
-            for experiment in exp_problem_list:
-                key = experiment.solver.name
-                if key not in experiment_dict:
-                    experiment_dict[key] = []
-                experiment_dict[key].append(experiment)
-        
-        experiments = list(experiment_dict.values())
+
+        solver_idx_map = {orig_idx: new_idx for new_idx, orig_idx in enumerate(needed_solver_indices)}
+        problem_idx_map = {orig_idx: new_idx for new_idx, orig_idx in enumerate(needed_problem_indices)}
         
         # Generate plots
         update_status(folder, "Generating plots...")
         plot_files = []
         
         from simopt.experiment_base import PlotType, plot_progress_curves, plot_terminal_progress, plot_solvability_profiles, plot_solvability_cdfs, plot_terminal_scatterplots, plot_area_scatterplots
-        
-        plots_config = payload.get("plots", [])
-        
-        # If no plots specified, default to MEAN
-        if not plots_config:
-            plots_config = [{"plot_type": "MEAN", "params": {}}]
-        
-        # Generate plots based on configuration
         for plot_cfg in plots_config:
             plot_type_name = plot_cfg.get("plot_type", "MEAN").upper()
             plot_params = plot_cfg.get("params", {})
+            plot_solvers = plot_cfg.get("solvers")
+            plot_problems = plot_cfg.get("problems")
             
-            n_solvers = len(solvers_config)
+            # Map selected indices to experiment array positions
+            if plot_solvers:
+                plot_solver_abbrs = [SOLVER_FULL_TO_ABBR.get(s, s) for s in plot_solvers]
+                orig_solver_indices = [i for i, s in enumerate(solvers_config) if s["name"] in plot_solver_abbrs]
+                solver_exp_indices = [solver_idx_map[i] for i in orig_solver_indices]
+            else:
+                solver_exp_indices = list(range(len(needed_solver_indices)))
             
+            if plot_problems:
+                plot_problem_abbrs = [PROBLEM_FULL_TO_ABBR.get(p, p) for p in plot_problems]
+                orig_problem_indices = [i for i, p in enumerate(problems_config) if p["name"] in plot_problem_abbrs]
+                problem_exp_indices = [problem_idx_map[i] for i in orig_problem_indices]
+            else:
+                problem_exp_indices = list(range(len(needed_problem_indices)))
+            
+            if not solver_exp_indices or not problem_exp_indices:
+                continue
+                        
             if plot_type_name in ["ALL", "MEAN", "QUANTILE"]:
                 # Generate progress curves for each problem
-                for i in range(len(experiments[0])):
+                for exp_prob_idx in problem_exp_indices:
                     try:
-                        print(f"Generating {plot_type_name} plot {i+1}/{len(experiments[0])}...")
                         plt.figure(figsize=(10, 6))
 
                         all_in_one = plot_params.get("all_in_one", True)
@@ -452,12 +484,13 @@ def run_experiment_async(run_id: str, payload: dict):
                         plot_type_enum = plot_type_map.get(plot_type_name, PlotType.MEAN)
 
                         plot_progress_curves(
-                            [experiments[solver_idx][i] for solver_idx in range(n_solvers)],
+                            [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices],
                             plot_type=plot_type_enum,
                             all_in_one=all_in_one,
                             normalize=normalize,
                         )
-                        filename = f"{plot_type_name.lower()}_progress_curves_problem_{i+1}.png"
+                        actual_prob_idx = needed_problem_indices[exp_prob_idx]
+                        filename = f"{plot_type_name.lower()}_progress_curves_problem_{actual_prob_idx+1}.png"
                         plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
                         plt.close()
                         plot_files.append(filename)
@@ -470,9 +503,8 @@ def run_experiment_async(run_id: str, payload: dict):
             
             elif plot_type_name in ["VIOLIN", "BOX"]:
                 # Generate terminal progress plots (BOX or VIOLIN) for each problem
-                for i in range(len(experiments[0])):
+                for exp_prob_idx in problem_exp_indices:
                     try:
-                        print(f"Generating {plot_type_name} plot {i+1}/{len(experiments[0])}...")
                         plt.figure(figsize=(10, 6))
                         
                         # Extract parameters with defaults
@@ -483,12 +515,13 @@ def run_experiment_async(run_id: str, payload: dict):
                         plot_type_enum = PlotType.VIOLIN if plot_type_name == "VIOLIN" else PlotType.BOX
                         
                         plot_terminal_progress(
-                            [experiments[solver_idx][i] for solver_idx in range(n_solvers)],
+                            [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices],
                             plot_type=plot_type_enum,
                             normalize=normalize,
                             all_in_one=all_in_one,
                         )
-                        filename = f"{plot_type_name.lower()}_terminal_progress_problem_{i+1}.png"
+                        actual_prob_idx = needed_problem_indices[exp_prob_idx]
+                        filename = f"{plot_type_name.lower()}_progress_curves_problem_{actual_prob_idx+1}.png"
                         plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
                         plt.close()
                         plot_files.append(filename)
@@ -501,7 +534,7 @@ def run_experiment_async(run_id: str, payload: dict):
 
             elif plot_type_name in ["AREA", "AREA_MEAN", "AREA_STD_DEV"]:
                 # Generate area scatterplots for each problem
-                if len(experiments[0]) < 2:
+                if len(problem_exp_indices) < 2:
                     print(f"Warning: {plot_type_name} requires multiple problems. Skipping.")
                     continue
                 try:
@@ -522,9 +555,13 @@ def run_experiment_async(run_id: str, payload: dict):
                         "AREA_STD_DEV": PlotType.AREA_STD_DEV
                     }
                     plot_type_enum = plot_type_map.get(plot_type_name)
+
+                    filtered_experiments = [
+                        [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices]
+                        for exp_prob_idx in problem_exp_indices]   
                                         
                     plot_area_scatterplots(
-                        experiments,
+                        filtered_experiments,
                         all_in_one=all_in_one,
                         n_bootstraps=n_bootstraps,
                         conf_level=conf_level,
@@ -545,7 +582,7 @@ def run_experiment_async(run_id: str, payload: dict):
 
             elif plot_type_name in ["CDF_SOLVABILITY", "QUANTILE_SOLVABILITY", "DIFFERENCE_OF_CDF_SOLVABILITY", "DIFFERENCE_OF_QUANTILE_SOLVABILITY"]:
                 # Solvability profiles require multiple problems
-                if len(experiments[0]) < 2:
+                if len(problem_exp_indices) < 2:
                     print(f"Warning: {plot_type_name} requires multiple problems. Skipping.")
                     continue
                 try:
@@ -570,9 +607,13 @@ def run_experiment_async(run_id: str, payload: dict):
                         "DIFFERENCE_OF_QUANTILE_SOLVABILITY": PlotType.DIFFERENCE_OF_QUANTILE_SOLVABILITY,
                     }
                     plot_type_enum = plot_type_map.get(plot_type_name)
+
+                    filtered_experiments = [
+                        [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices]
+                        for exp_prob_idx in problem_exp_indices]   
                                         
                     plot_solvability_profiles(
-                        experiments,  # Pass the full experiments grid
+                        filtered_experiments,
                         plot_type=plot_type_enum,
                         all_in_one=all_in_one,
                         n_bootstraps=n_bootstraps,
@@ -597,9 +638,8 @@ def run_experiment_async(run_id: str, payload: dict):
 
             elif plot_type_name == "SOLVE_TIME_CDF":
                 # Generate solvability CDF plots for each problem
-                for i in range(len(experiments[0])):
+                for exp_prob_idx in problem_exp_indices:
                     try:
-                        print(f"Generating SOLVE_TIME_CDF plot {i+1}/{len(experiments[0])}...")
                         plt.figure(figsize=(10, 6))
                         
                         # Extract parameters with defaults
@@ -611,7 +651,7 @@ def run_experiment_async(run_id: str, payload: dict):
                         print_max_hw = plot_params.get("print_max_hw", False)
                                                 
                         plot_solvability_cdfs(
-                            [experiments[solver_idx][i] for solver_idx in range(n_solvers)],
+                            [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices],
                             solve_tol=solve_tol,
                             all_in_one=all_in_one,
                             n_bootstraps=n_bootstraps,
@@ -632,7 +672,7 @@ def run_experiment_async(run_id: str, payload: dict):
 
             elif plot_type_name == "TERMINAL_SCATTER":
                 # Generate terminal scatterplot (requires multiple problems)
-                if len(experiments[0]) < 2:
+                if len(problem_exp_indices) < 2:
                     print("Warning: TERMINAL_SCATTER requires multiple problems. Skipping.")
                     continue
                     
@@ -644,9 +684,13 @@ def run_experiment_async(run_id: str, payload: dict):
                     all_in_one = plot_params.get("all_in_one", True)
                     solver_set_name = plot_params.get("solver_set_name", "SOLVER_SET")
                     problem_set_name = plot_params.get("problem_set_name", "PROBLEM_SET")
-                                        
+
+                    filtered_experiments = [
+                        [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices]
+                        for exp_prob_idx in problem_exp_indices]   
+                            
                     plot_terminal_scatterplots(
-                        experiments,  # Pass the full experiments grid
+                        filtered_experiments,
                         all_in_one=all_in_one,
                         solver_set_name=solver_set_name,
                         problem_set_name=problem_set_name,
