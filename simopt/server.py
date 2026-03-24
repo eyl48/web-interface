@@ -330,6 +330,67 @@ def debug_directories():
 def run_experiment_async(run_id: str, payload: dict):
     """Run the experiment in a background thread."""
     folder = Path("svelte-app/results") / run_id
+
+    import json as _json
+    import sys
+    import threading
+
+    log_file = folder / "experiment.log"
+    write_lock = threading.Lock()
+
+    class PrintCapture:
+        """Wraps sys.stdout to tee print() calls into the JSON log file."""
+        def __init__(self, original):
+            self.original = original
+            self.buf = ""
+
+        def write(self, text):
+            self.original.write(text)   # still show in terminal
+            self.buf += text
+            # Flush on newlines
+            while "\n" in self.buf:
+                line, self.buf = self.buf.split("\n", 1)
+                line = line.strip()
+                if line:
+                    entry = {
+                        "time": __import__("datetime").datetime.now().strftime("%H:%M:%S"),
+                        "level": "INFO",
+                        "msg": line,
+                    }
+                    with write_lock:
+                        with open(log_file, "a") as f:
+                            f.write(_json.dumps(entry) + "\n")
+
+        def flush(self):
+            self.original.flush()
+
+        def isatty(self):
+            return False
+
+    # Install the capture (thread-local would be ideal but print goes to global stdout;
+    # this is safe for a single experiment at a time)
+    original_stdout = sys.stdout
+    sys.stdout = PrintCapture(original_stdout)
+
+    import logging as _logging
+
+    class PrintForwardHandler(_logging.Handler):
+        def emit(self, record):
+            if record.name.startswith(('matplotlib', 'PIL', 'urllib', 'findfont')):
+                return
+            msg = self.format(record)
+            if msg.startswith('findfont:'):
+                return
+            print(msg)
+
+    log_handler = PrintForwardHandler()
+    log_handler.setFormatter(_logging.Formatter('%(message)s'))
+    log_handler.setLevel(_logging.DEBUG)
+
+    root_logger = _logging.getLogger()
+    original_level = root_logger.level
+    root_logger.setLevel(_logging.DEBUG)
+    root_logger.addHandler(log_handler)
     
     try:
         update_status(folder, "Running experiments...")
@@ -400,7 +461,7 @@ def run_experiment_async(run_id: str, payload: dict):
         all_experiments = []
         for prob_idx in needed_problem_indices:
             prob_cfg = problems_config[prob_idx]
-            update_status(folder, f"Running problem {prob_idx + 1}: {prob_cfg['name']}...")
+            print(f"Running problem {prob_idx + 1}: {prob_cfg['name']}...")
             
             experiments_same_problem = []
             
@@ -439,7 +500,7 @@ def run_experiment_async(run_id: str, payload: dict):
         problem_idx_map = {orig_idx: new_idx for new_idx, orig_idx in enumerate(needed_problem_indices)}
         
         # Generate plots
-        update_status(folder, "Generating plots...")
+        print("Generating plots...")
         plot_files = []
         
         from simopt.experiment_base import PlotType, plot_progress_curves, plot_terminal_progress, plot_solvability_profiles, plot_solvability_cdfs, plot_terminal_scatterplots, plot_area_scatterplots
@@ -716,25 +777,61 @@ def run_experiment_async(run_id: str, payload: dict):
         import traceback
         traceback.print_exc()
 
+    finally:
+        sys.stdout = original_stdout
+        root_logger.removeHandler(log_handler)
+        root_logger.setLevel(original_level)
+
 
 def update_status(folder: Path, status: str, plot_files: list = None):
     """Update the results page with current status and plots."""
     run_id = folder.name
-    
     plots_html = ""
     if plot_files:
-        plots_html = '<div id="plots" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;">'
-        for plot_file in plot_files:
-            plots_html += f'''
-            <div class="plot-container">
+        plot_cards = ""
+        minimized_icons = ""
+        preview_data = ""
+        for i, plot_file in enumerate(plot_files):
+            plot_id = f"plot_{i}"
+            label = plot_file.replace("_", " ").replace(".png", "")
+            plot_cards += f"""
+            <div class="plot-card" id="{plot_id}">
+                <div class="plot-card-header">
+                    <span class="plot-label">{label}</span>
+                    <button class="collapse-btn" onclick="collapsePlot('{plot_id}')" title="Minimize plot">−</button>
+                </div>
                 <img src="{plot_file}" alt="{plot_file}">
-                <p style="text-align: center; margin-top: 0.5rem; color: #6b7280; font-size: 0.9rem;">{plot_file}</p>
             </div>
-            '''
-        plots_html += '</div>'
-    
+            """
+            minimized_icons += f"""
+            <div class="mini-icon" id="mini_{plot_id}" style="display:none;"
+                 onmouseenter="expandPreview('{plot_id}', this)"
+                 onmouseleave="collapsePreview()"
+                 onclick="restorePlot('{plot_id}')">
+                <div class="mini-thumbnail-wrapper">
+                    <img src="{plot_file}" alt="{label}" class="mini-thumbnail">
+                    <div class="mini-overlay">
+                        <span class="mini-restore-hint">click to restore</span>
+                    </div>
+                </div>
+                <span class="mini-label">{label}</span>
+            </div>
+            """
+            preview_data += f'"{plot_id}": {{"src": "{plot_file}", "label": "{label}"}},'
+
+        plots_html = f"""
+        <div id="plots-grid">{plot_cards}</div>
+        <div id="minimized-tray">{minimized_icons}</div>
+        <div id="global-preview" style="display:none;">
+            <img id="global-preview-img" src="" alt="">
+            <p id="global-preview-label"></p>
+        </div>
+        <script>var previewData = {{ {preview_data} }};</script>
+        """
+
     status_class = "success" if status == "Complete!" else ("error" if status.startswith("Error:") else "running")
-    
+    is_running = status_class == "running"
+
     html_content = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -745,33 +842,426 @@ def update_status(folder: Path, status: str, plot_files: list = None):
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: 'Inter', sans-serif; background: #f9fafb; min-height: 100vh; }}
-        .header {{ background: #e5e7eb; padding: 1.5rem 2rem; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); margin-bottom: 2rem; }}
+        .header {{ background: #e5e7eb; padding: 1.5rem 2rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 2rem; }}
         .header h1 {{ color: #0f172a; font-size: 2rem; font-weight: 700; }}
-        .container {{ max-width: 1400px; margin: 0 auto; padding: 0 2rem 2rem; }}
+        .container {{ max-width: 1400px; margin: 0 auto; padding: 0 2rem 6rem; }}
         .card {{ background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); margin-bottom: 1.5rem; }}
         .card h2 {{ color: #2563eb; font-size: 1.2rem; margin-bottom: 1rem; }}
         .status {{ padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }}
         .status.running {{ background: #eff6ff; border: 1px solid #93c5fd; }}
         .status.success {{ background: #dcfce7; border: 1px solid #86efac; }}
-        .status.error {{ background: #fee2e2; border: 1px solid #fca5a5; }}
+        .status.error   {{ background: #fee2e2; border: 1px solid #fca5a5; }}
         .status p {{ margin: 0.5rem 0; }}
         .status.running p {{ color: #1e40af; }}
         .status.success p {{ color: #166534; }}
-        .status.error p {{ color: #991b1b; }}
+        .status.error   p {{ color: #991b1b; }}
         .status strong {{ font-weight: 600; }}
-        .plot-container {{ background: white; padding: 1rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }}
-        .plot-container img {{ width: 100%; height: auto; border-radius: 4px; display: block; }}
+
+        /* ── Log panel ── */
+        .log-panel {{
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+            margin-bottom: 1.5rem;
+            border: 1px solid #e2e8f0;
+            overflow: hidden;
+        }}
+        .log-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1.5rem;
+            background: white;
+            border-bottom: 1px solid #e2e8f0;
+        }}
+        .log-header-left {{
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+        }}
+        .log-title {{
+            color: #2563eb;
+            font-size: 1.2rem;
+            font-weight: 600;
+        }}
+        .log-dot {{
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #22c55e;
+            flex-shrink: 0;
+            box-shadow: 0 0 5px #22c55e;
+            animation: pulse 1.5s infinite;
+        }}
+        .log-dot.idle {{
+            background: #9ca3af;
+            box-shadow: none;
+            animation: none;
+        }}
+        @keyframes pulse {{
+            0%, 100% {{ opacity: 1; }}
+            50% {{ opacity: 0.35; }}
+        }}
+        .log-controls {{
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }}
+        .log-btn {{
+            background: white;
+            border: 1px solid #e2e8f0;
+            color: #64748b;
+            font-size: 0.72rem;
+            font-weight: 500;
+            padding: 0.25rem 0.65rem;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+        }}
+        .log-btn:hover {{ background: #f1f5f9; color: #374151; border-color: #cbd5e1; }}
+        #log-body {{
+            padding: 0.85rem 1.5rem;
+            height: 260px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.75rem;
+            line-height: 1.75;
+            background: #f1f5f9;
+        }}
+        #log-body::-webkit-scrollbar {{ width: 5px; }}
+        #log-body::-webkit-scrollbar-track {{ background: #e2e8f0; }}
+        #log-body::-webkit-scrollbar-thumb {{ background: #cbd5e1; border-radius: 3px; }}
+        .log-entry {{
+            display: flex;
+            gap: 0.75rem;
+            padding: 0.1rem 0;
+            border-bottom: 1px solid #e2e8f0;
+        }}
+        .log-entry:last-child {{ border-bottom: none; }}
+        .log-time {{ color: #9ca3af; flex-shrink: 0; min-width: 58px; }}
+        .log-msg {{ color: #374151; word-break: break-word; }}
+        .log-msg .kw-success {{ color: #16a34a; font-weight: 600; }}
+        .log-msg .kw-error   {{ color: #dc2626; font-weight: 600; }}
+        .log-msg .kw-running {{ color: #2563eb; }}
+        .log-msg .kw-saved   {{ color: #7c3aed; }}
+        .log-empty {{ color: #9ca3af; font-style: italic; padding: 0.5rem 0; }}
+
+        .log-toggle {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1.5rem;
+            cursor: pointer;
+            background: white;
+            transition: background 0.15s;
+        }}
+        .log-toggle:hover {{ background: #f8fafc; }}
+        .log-toggle-left {{
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+        }}
+        .log-toggle-right {{
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }}
+        .log-chevron {{
+            color: #9ca3af;
+            font-size: 0.8rem;
+            transition: transform 0.2s ease;
+        }}
+        .log-chevron.open {{ transform: rotate(180deg); }}
+        .log-body-wrapper {{ display: none; border-top: 1px solid #e2e8f0; }}
+        .log-body-wrapper.open {{ display: block; }}
+
+        /* ── Plot grid ── */
+        #plots-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 1.5rem;
+            margin-top: 1.5rem;
+        }}
+        .plot-card {{
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            overflow: visible;
+            transition: box-shadow 0.2s ease;
+        }}
+        .plot-card:hover {{ box-shadow: 0 4px 16px rgba(0,0,0,0.12); }}
+        .plot-card-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.6rem 0.9rem;
+            border-bottom: 1px solid #f1f5f9;
+        }}
+        .plot-label {{
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #475569;
+            text-transform: capitalize;
+            letter-spacing: 0.02em;
+        }}
+        .collapse-btn {{
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: 1.5px solid #cbd5e1;
+            background: #f8fafc;
+            color: #64748b;
+            font-size: 1.1rem;
+            line-height: 1;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s, border-color 0.15s, color 0.15s;
+            flex-shrink: 0;
+        }}
+        .collapse-btn:hover {{ background: #fee2e2; border-color: #fca5a5; color: #dc2626; }}
+        .plot-card img {{ width: 100%; height: auto; border-radius: 0 0 10px 10px; display: block; }}
+
+        /* ── Minimized tray ── */
+        #minimized-tray {{
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            padding: 10px 20px;
+            background: rgba(241,245,249,0.92);
+            backdrop-filter: blur(8px);
+            border-top: 1px solid #e2e8f0;
+            z-index: 100;
+        }}
+        #minimized-tray:empty {{ display: none; }}
+        .mini-icon {{
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 3px;
+            cursor: pointer;
+            transition: transform 0.15s ease;
+        }}
+        .mini-icon:hover {{ transform: translateY(-3px); }}
+        .mini-thumbnail-wrapper {{
+            position: relative;
+            width: 64px; height: 48px;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1.5px solid #cbd5e1;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+            opacity: 0.55;
+            transition: opacity 0.15s, border-color 0.15s, box-shadow 0.15s;
+        }}
+        .mini-icon:hover .mini-thumbnail-wrapper {{
+            opacity: 1;
+            border-color: #2563eb;
+            box-shadow: 0 2px 8px rgba(37,99,235,0.2);
+        }}
+        .mini-thumbnail {{ width: 100%; height: 100%; object-fit: cover; display: block; }}
+        .mini-overlay {{
+            position: absolute; inset: 0;
+            background: rgba(15,23,42,0);
+            display: flex; align-items: center; justify-content: center;
+            transition: background 0.15s;
+        }}
+        .mini-icon:hover .mini-overlay {{ background: rgba(15,23,42,0.35); }}
+        .mini-restore-hint {{
+            color: white; font-size: 0.6rem; font-weight: 600;
+            opacity: 0; transition: opacity 0.15s;
+            text-transform: uppercase; letter-spacing: 0.05em;
+        }}
+        .mini-icon:hover .mini-restore-hint {{ opacity: 1; }}
+        .mini-label {{
+            font-size: 0.6rem; color: #94a3b8;
+            text-align: center; max-width: 70px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            text-transform: capitalize;
+        }}
+        .mini-icon:hover .mini-label {{ color: #2563eb; }}
+
+        /* ── Global preview ── */
+        #global-preview {{
+            display: none;
+            position: fixed;
+            width: 380px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.18), 0 0 0 1px rgba(37,99,235,0.12);
+            padding: 0.75rem;
+            pointer-events: none;
+            z-index: 9999;
+            animation: previewIn 0.15s ease;
+        }}
+        #global-preview::after {{
+            content: '';
+            position: absolute;
+            top: 100%;
+            left: var(--arrow-left, 50%);
+            transform: translateX(-50%);
+            border: 7px solid transparent;
+            border-top-color: white;
+        }}
+        #global-preview img {{ width: 100%; height: auto; border-radius: 6px; display: block; }}
+        #global-preview p {{ font-size: 0.78rem; color: #64748b; text-align: center; margin-top: 0.5rem; font-weight: 500; text-transform: capitalize; }}
+        @keyframes previewIn {{
+            from {{ opacity: 0; transform: translateY(6px); }}
+            to   {{ opacity: 1; transform: translateY(0); }}
+        }}
     </style>
     <script>
-        // Auto-refresh while running
-        if ("{status_class}" === "running") {{
-            setTimeout(() => location.reload(), 3000);
+        var allLogs = [];
+        var autoScroll = true;
+        var lastLogCount = 0;
+
+        function fetchLogs() {{
+            fetch('experiment.log?t=' + Date.now())
+                .then(function(r) {{ return r.text(); }})
+                .catch(function() {{ return ''; }})
+                .then(function(text) {{
+                    if (!text.trim()) return;
+                    var lines = text.trim().split('\\n');
+                    if (lines.length === lastLogCount) return;
+                    lastLogCount = lines.length;
+                    allLogs = [];
+                    lines.forEach(function(line) {{
+                        try {{ allLogs.push(JSON.parse(line)); }} catch(e) {{}}
+                    }});
+                    renderLogs();
+                }});
         }}
+
+        function colorize(msg) {{
+            msg = msg.replace(/(completed successfully|Complete!)/gi, '<span class="kw-success">$1</span>');
+            msg = msg.replace(/(error|failed|exception)/gi, '<span class="kw-error">$1</span>');
+            msg = msg.replace(/(Running|Starting|Creating|Post-replicating|Post-normalizing)/gi, '<span class="kw-running">$1</span>');
+            msg = msg.replace(/(Saved [^ ]+\.png)/gi, '<span class="kw-saved">$1</span>');
+            return msg;
+        }}
+
+        function escHtml(s) {{
+            return String(s)
+                .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }}
+
+        function renderLogs() {{
+            var body = document.getElementById('log-body');
+            if (allLogs.length === 0) {{
+                body.innerHTML = '<div class="log-empty">Waiting for output...</div>';
+                return;
+            }}
+            var atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+            body.innerHTML = allLogs.map(function(e) {{
+                return '<div class="log-entry">' +
+                    '<span class="log-time">' + escHtml(e.time) + '</span>' +
+                    '<span class="log-msg">' + colorize(escHtml(e.msg)) + '</span>' +
+                    '</div>';
+            }}).join('');
+            if (autoScroll && atBottom) {{
+                body.scrollTop = body.scrollHeight;
+            }}
+        }}
+
+        var logOpen = false;
+        function toggleLog() {{
+            logOpen = !logOpen;
+            var wrapper = document.getElementById('log-body-wrapper');
+            var chevron = document.getElementById('log-chevron');
+            if (logOpen) {{
+                wrapper.classList.add('open');
+                chevron.classList.add('open');
+            }} else {{
+                wrapper.classList.remove('open');
+                chevron.classList.remove('open');
+            }}
+        }}
+
+        function toggleAutoScroll() {{
+            autoScroll = !autoScroll;
+            var btn = document.getElementById('autoscroll-btn');
+            btn.textContent = autoScroll ? 'Auto-scroll: ON' : 'Auto-scroll: OFF';
+            btn.style.color = autoScroll ? '#22c55e' : '#64748b';
+        }}
+
+        function clearDisplay() {{
+            allLogs = [];
+            renderLogs();
+        }}
+
+        // ── Plot functions ──
+        function collapsePlot(plotId) {{
+            document.getElementById(plotId).style.display = 'none';
+            document.getElementById('mini_' + plotId).style.display = 'flex';
+            document.getElementById('minimized-tray').style.display = 'flex';
+        }}
+
+        function restorePlot(plotId) {{
+            collapsePreview();
+            document.getElementById('mini_' + plotId).style.display = 'none';
+            var card = document.getElementById(plotId);
+            card.style.display = '';
+            card.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+        }}
+
+        function expandPreview(plotId, iconEl) {{
+            var preview = document.getElementById('global-preview');
+            var data = previewData[plotId];
+            if (!data) return;
+            document.getElementById('global-preview-img').src = data.src;
+            document.getElementById('global-preview-img').alt = data.label;
+            document.getElementById('global-preview-label').textContent = data.label;
+            preview.style.display = 'block';
+            preview.style.visibility = 'hidden';
+            preview.style.left = '0px';
+            preview.style.top = '0px';
+            var previewW = preview.offsetWidth;
+            var previewH = preview.offsetHeight;
+            var margin = 12;
+            var iconRect = iconEl.getBoundingClientRect();
+            var left = iconRect.left + iconRect.width / 2 - previewW / 2;
+            var top = iconRect.top - previewH - 14;
+            var clampedLeft = Math.max(margin, Math.min(left, window.innerWidth - previewW - margin));
+            preview.style.left = clampedLeft + 'px';
+            preview.style.top = top + 'px';
+            var arrowLeft = (iconRect.left + iconRect.width / 2) - clampedLeft;
+            preview.style.setProperty('--arrow-left', arrowLeft + 'px');
+            preview.style.visibility = 'visible';
+        }}
+
+        function collapsePreview() {{
+            document.getElementById('global-preview').style.display = 'none';
+        }}
+
+        // ── Init ──
+        function saveLogState() {{
+            sessionStorage.setItem('logOpen', logOpen ? '1' : '0');
+        }}
+
+        window.addEventListener('beforeunload', saveLogState);
+
+        window.addEventListener('DOMContentLoaded', function() {{
+            var savedOpen = sessionStorage.getItem('logOpen');
+            if (savedOpen === '1') {{
+                logOpen = true;
+                document.getElementById('log-body-wrapper').classList.add('open');
+                document.getElementById('log-chevron').classList.add('open');
+            }}
+            fetchLogs();
+            if (isRunning) {{
+                setInterval(fetchLogs, 1500);
+            }}
+        }});
     </script>
 </head>
 <body>
     <div class="header"><h1>Results</h1></div>
     <div class="container">
+
         <div class="card">
             <h2>Experiment Details</h2>
             <div class="status {status_class}">
@@ -779,11 +1269,39 @@ def update_status(folder: Path, status: str, plot_files: list = None):
                 <p><strong>Status:</strong> {status}</p>
             </div>
         </div>
+
+        <div class="log-panel">
+            <div style="display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1.5rem; background:white; border-bottom:1px solid #e2e8f0; cursor:pointer;" onclick="toggleLog()">
+                <div style="display:flex; align-items:center; gap:0.6rem;">
+                    <div class="log-dot" id="log-dot"></div>
+                    <span class="log-title">Output Log</span>
+                    <span class="log-chevron" id="log-chevron">&#9660;</span>
+                </div>
+                <div style="display:flex; gap:0.5rem;">
+                    <button class="log-btn" id="autoscroll-btn"
+                        onclick="event.stopPropagation(); toggleAutoScroll();"
+                        style="color:#16a34a; border-color:#bbf7d0; background:#f0fdf4;">Auto-scroll: ON</button>
+                    <button class="log-btn"
+                        onclick="event.stopPropagation(); clearDisplay();">Clear</button>
+                </div>
+            </div>
+            <div class="log-body-wrapper" id="log-body-wrapper">
+                <div id="log-body">
+                    <div class="log-empty">Waiting for output...</div>
+                </div>
+            </div>
+        </div>
+
         {plots_html}
+
+    </div>
+    <div id="global-preview" style="display:none;">
+        <img id="global-preview-img" src="" alt="">
+        <p id="global-preview-label"></p>
     </div>
 </body>
 </html>"""
-    
+
     with open(folder / "index.html", "w") as f:
         f.write(html_content)
 
