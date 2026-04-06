@@ -315,6 +315,53 @@ def check_compatibility(payload: dict):
 
     return {"compatibility": compatibility}
 
+def _check_rerun_logic(payload: dict) -> bool:
+    """Returns True if experiment needs to rerun, False if only plots changed."""
+    last_run_id = payload.get("last_run_id")
+    if not last_run_id:
+        print("check_rerun: no last_run_id, needs rerun")
+        return True
+
+    config_path = Path(f"svelte-app/results/{last_run_id}/experiment_config.json")
+    experiments_path = Path(f"svelte-app/results/{last_run_id}/experiments.pkl")
+
+    if not config_path.exists() or not experiments_path.exists():
+        print(f"check_rerun: missing files - config:{config_path.exists()} pkl:{experiments_path.exists()}")
+        return True
+
+    import json
+    with open(config_path) as f:
+        saved = json.load(f)
+
+    new_problems = [
+        {"name": PROBLEM_FULL_TO_ABBR.get(p["name"], p["name"]),
+         "fixed_factors": p.get("fixed_factors", {}),
+         "model_fixed_factors": p.get("model_fixed_factors", {})}
+        for p in payload.get("problems", [])
+    ]
+    new_solvers = [
+        {"name": SOLVER_FULL_TO_ABBR.get(s["name"], s["name"]),
+         "fixed_factors": s.get("fixed_factors", {})}
+        for s in payload.get("solvers", [])
+    ]
+    new_params = payload.get("experiment_params", {})
+
+    problems_match = saved["problems"] == new_problems
+    solvers_match = saved["solvers"] == new_solvers
+    params_match = saved["experiment_params"] == new_params
+
+    print(f"check_rerun: problems={problems_match}, solvers={solvers_match}, params={params_match}")
+    if not problems_match:
+        print(f"  saved problems: {saved['problems']}")
+        print(f"  new problems:   {new_problems}")
+    if not solvers_match:
+        print(f"  saved solvers:  {saved['solvers']}")
+        print(f"  new solvers:    {new_solvers}")
+    if not params_match:
+        print(f"  saved params:   {saved['experiment_params']}")
+        print(f"  new params:     {new_params}")
+
+    return not (problems_match and solvers_match and params_match)
 
 @app.get("/debug/directories")
 def debug_directories():
@@ -326,28 +373,288 @@ def debug_directories():
         "problem_mapping_sample": dict(list(PROBLEM_FULL_TO_ABBR.items())[:3]),
     }
 
+def generate_plots(plots_config, all_experiments, needed_solver_indices, needed_problem_indices, solver_idx_map, problem_idx_map, solvers_config, problems_config, folder):
+    """Shared plot generation logic used by both run_experiment_async and run_plots_only."""
+    from simopt.experiment_base import PlotType, plot_progress_curves, plot_terminal_progress, plot_solvability_profiles, plot_solvability_cdfs, plot_terminal_scatterplots, plot_area_scatterplots
+    
+    plot_files = []
+    
+    for plot_cfg in plots_config:
+        plot_type_name = plot_cfg.get("plot_type", "MEAN").upper()
+        plot_params = plot_cfg.get("params", {})
+        plot_solvers = plot_cfg.get("solvers")
+        plot_problems = plot_cfg.get("problems")
+        
+        # Map selected indices to experiment array positions
+        if plot_solvers:
+            plot_solver_abbrs = [SOLVER_FULL_TO_ABBR.get(s, s) for s in plot_solvers]
+            orig_solver_indices = [i for i, s in enumerate(solvers_config) if s["name"] in plot_solver_abbrs]
+            solver_exp_indices = [solver_idx_map[i] for i in orig_solver_indices]
+        else:
+            solver_exp_indices = list(range(len(needed_solver_indices)))
+        
+        if plot_problems:
+            plot_problem_abbrs = [PROBLEM_FULL_TO_ABBR.get(p, p) for p in plot_problems]
+            orig_problem_indices = [i for i, p in enumerate(problems_config) if p["name"] in plot_problem_abbrs]
+            problem_exp_indices = [problem_idx_map[i] for i in orig_problem_indices]
+        else:
+            problem_exp_indices = list(range(len(needed_problem_indices)))
+        
+        if not solver_exp_indices or not problem_exp_indices:
+            continue
+                    
+        if plot_type_name in ["ALL", "MEAN", "QUANTILE"]:
+            # Generate progress curves for each problem
+            for exp_prob_idx in problem_exp_indices:
+                try:
+                    plt.figure(figsize=(10, 6))
 
-def run_experiment_async(run_id: str, payload: dict):
-    """Run the experiment in a background thread."""
-    folder = Path("svelte-app/results") / run_id
+                    all_in_one = plot_params.get("all_in_one", True)
+                    normalize = plot_params.get("normalize", False)
 
-    import json as _json
-    import sys
-    import threading
+                    plot_type_map = {
+                        "ALL": PlotType.ALL,
+                        "MEAN": PlotType.MEAN,
+                        "QUANTILE": PlotType.QUANTILE,
+                    }
+                    plot_type_enum = plot_type_map.get(plot_type_name, PlotType.MEAN)
 
-    log_file = folder / "experiment.log"
+                    plot_progress_curves(
+                        [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices],
+                        plot_type=plot_type_enum,
+                        all_in_one=all_in_one,
+                        normalize=normalize,
+                    )
+                    actual_prob_idx = needed_problem_indices[exp_prob_idx]
+                    filename = f"{plot_type_name.lower()}_progress_curves_problem_{actual_prob_idx+1}.png"
+                    plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                    plt.close()
+                    plot_files.append(filename)
+                    print(f"  Saved {filename}")
+                except Exception as e:
+                    print(f"Error generating {plot_type_name} plot for problem {exp_prob_idx+1}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+        
+        elif plot_type_name in ["VIOLIN", "BOX"]:
+            # Generate terminal progress plots (BOX or VIOLIN) for each problem
+            for exp_prob_idx in problem_exp_indices:
+                try:
+                    plt.figure(figsize=(10, 6))
+                    
+                    # Extract parameters with defaults
+                    normalize = plot_params.get("normalize", True)
+                    all_in_one = plot_params.get("all_in_one", True)
+                    
+                    # Determine which PlotType to use
+                    plot_type_enum = PlotType.VIOLIN if plot_type_name == "VIOLIN" else PlotType.BOX
+                    
+                    plot_terminal_progress(
+                        [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices],
+                        plot_type=plot_type_enum,
+                        normalize=normalize,
+                        all_in_one=all_in_one,
+                    )
+                    actual_prob_idx = needed_problem_indices[exp_prob_idx]
+                    filename = f"{plot_type_name.lower()}_progress_curves_problem_{actual_prob_idx+1}.png"
+                    plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                    plt.close()
+                    plot_files.append(filename)
+                    print(f"  Saved {filename}")
+                except Exception as e:
+                    print(f"Error generating {plot_type_name} plot for problem {exp_prob_idx+1}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+
+        elif plot_type_name in ["AREA", "AREA_MEAN", "AREA_STD_DEV"]:
+            # Generate area scatterplots for each problem
+            if len(problem_exp_indices) < 2:
+                print(f"Warning: {plot_type_name} requires multiple problems. Skipping.")
+                continue
+            try:
+                print(f"Generating {plot_type_name} plot...")
+                plt.figure(figsize=(10, 6))
+                # Extract parameters with defaults
+                all_in_one = plot_params.get("all_in_one", True)
+                n_bootstraps = plot_params.get("n_bootstraps", 100)
+                conf_level = plot_params.get("conf_level", 0.95)
+                plot_conf_ints = plot_params.get("plot_conf_ints", True)
+                print_max_hw = plot_params.get("print_max_hw", True)
+                solver_set_name = plot_params.get("solver_set_name", "SOLVER_SET")
+                problem_set_name = plot_params.get("problem_set_name", "PROBLEM_SET")
+
+                plot_type_map = {
+                    "AREA": PlotType.AREA,
+                    "AREA_MEAN": PlotType.AREA_MEAN,
+                    "AREA_STD_DEV": PlotType.AREA_STD_DEV
+                }
+                plot_type_enum = plot_type_map.get(plot_type_name)
+
+                filtered_experiments = [
+                    [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices]
+                    for exp_prob_idx in problem_exp_indices]   
+                                    
+                plot_area_scatterplots(
+                    filtered_experiments,
+                    all_in_one=all_in_one,
+                    n_bootstraps=n_bootstraps,
+                    conf_level=conf_level,
+                    plot_conf_ints=plot_conf_ints,
+                    print_max_hw=print_max_hw,
+                    solver_set_name=solver_set_name,
+                    problem_set_name=problem_set_name,
+                )
+                filename = f"{plot_type_name.lower()}_area_scatterplot.png"
+                plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                plt.close()
+                plot_files.append(filename)
+                print(f"  Saved {filename}")
+            except Exception as e:
+                print(f"Error generating {plot_type_name} plot: {e}")
+                import traceback
+                traceback.print_exc()
+
+        elif plot_type_name in ["CDF_SOLVABILITY", "QUANTILE_SOLVABILITY", "DIFFERENCE_OF_CDF_SOLVABILITY", "DIFFERENCE_OF_QUANTILE_SOLVABILITY"]:
+            # Solvability profiles require multiple problems
+            if len(problem_exp_indices) < 2:
+                print(f"Warning: {plot_type_name} requires multiple problems. Skipping.")
+                continue
+            try:
+                print(f"Generating {plot_type_name} plot...")
+                plt.figure(figsize=(10, 6))
+                # Extract parameters with defaults
+                all_in_one = plot_params.get("all_in_one", True)
+                n_bootstraps = plot_params.get("n_bootstraps", 100)
+                conf_level = plot_params.get("conf_level", 0.95)
+                plot_conf_ints = plot_params.get("plot_conf_ints", False)  # Disabled by default
+                print_max_hw = plot_params.get("print_max_hw", False)
+                solve_tol = plot_params.get("solve_tol", 0.1)
+                beta = plot_params.get("beta", 0.5)
+                ref_solver = plot_params.get("ref_solver", None)
+                solver_set_name = plot_params.get("solver_set_name", "SOLVER_SET")
+                problem_set_name = plot_params.get("problem_set_name", "PROBLEM_SET")
+                # Map plot type name to PlotType enum
+                plot_type_map = {
+                    "CDF_SOLVABILITY": PlotType.CDF_SOLVABILITY,
+                    "QUANTILE_SOLVABILITY": PlotType.QUANTILE_SOLVABILITY,
+                    "DIFFERENCE_OF_CDF_SOLVABILITY": PlotType.DIFFERENCE_OF_CDF_SOLVABILITY,
+                    "DIFFERENCE_OF_QUANTILE_SOLVABILITY": PlotType.DIFFERENCE_OF_QUANTILE_SOLVABILITY,
+                }
+                plot_type_enum = plot_type_map.get(plot_type_name)
+
+                filtered_experiments = [
+                    [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices]
+                    for exp_prob_idx in problem_exp_indices]   
+                                    
+                plot_solvability_profiles(
+                    filtered_experiments,
+                    plot_type=plot_type_enum,
+                    all_in_one=all_in_one,
+                    n_bootstraps=n_bootstraps,
+                    conf_level=conf_level,
+                    plot_conf_ints=plot_conf_ints,
+                    print_max_hw=print_max_hw,
+                    solve_tol=solve_tol,
+                    beta=beta,
+                    ref_solver=ref_solver,
+                    solver_set_name=solver_set_name,
+                    problem_set_name=problem_set_name,
+                )
+                filename = f"{plot_type_name.lower()}_solvability_profile.png"
+                plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                plt.close()
+                plot_files.append(filename)
+                print(f"  Saved {filename}")
+            except Exception as e:
+                print(f"Error generating {plot_type_name} plot: {e}")
+                import traceback
+                traceback.print_exc()
+
+        elif plot_type_name == "SOLVE_TIME_CDF":
+            # Generate solvability CDF plots for each problem
+            for exp_prob_idx in problem_exp_indices:
+                try:
+                    plt.figure(figsize=(10, 6))
+                    
+                    # Extract parameters with defaults
+                    solve_tol = plot_params.get("solve_tol", 0.1)
+                    all_in_one = plot_params.get("all_in_one", True)
+                    n_bootstraps = plot_params.get("n_bootstraps", 100)
+                    conf_level = plot_params.get("conf_level", 0.95)
+                    plot_conf_ints = plot_params.get("plot_conf_ints", False)  # Disabled by default to avoid bootstrap errors
+                    print_max_hw = plot_params.get("print_max_hw", False)
+                                            
+                    plot_solvability_cdfs(
+                        [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices],
+                        solve_tol=solve_tol,
+                        all_in_one=all_in_one,
+                        n_bootstraps=n_bootstraps,
+                        conf_level=conf_level,
+                        plot_conf_ints=plot_conf_ints,
+                        print_max_hw=print_max_hw,
+                    )
+                    filename = f"solvability_cdf_problem_{exp_prob_idx+1}.png"
+                    plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                    plt.close()
+                    plot_files.append(filename)
+                    print(f"  Saved {filename}")
+                except Exception as e:
+                    print(f"Error generating SOLVE_TIME_CDF plot for problem {exp_prob_idx+1}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+
+        elif plot_type_name == "TERMINAL_SCATTER":
+            # Generate terminal scatterplot (requires multiple problems)
+            if len(problem_exp_indices) < 2:
+                print("Warning: TERMINAL_SCATTER requires multiple problems. Skipping.")
+                continue
+                
+            try:
+                print(f"Generating TERMINAL_SCATTER plot...")
+                plt.figure(figsize=(10, 6))
+                
+                # Extract parameters with defaults
+                all_in_one = plot_params.get("all_in_one", True)
+                solver_set_name = plot_params.get("solver_set_name", "SOLVER_SET")
+                problem_set_name = plot_params.get("problem_set_name", "PROBLEM_SET")
+
+                filtered_experiments = [
+                    [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices]
+                    for exp_prob_idx in problem_exp_indices]   
+                        
+                plot_terminal_scatterplots(
+                    filtered_experiments,
+                    all_in_one=all_in_one,
+                    solver_set_name=solver_set_name,
+                    problem_set_name=problem_set_name,
+                )
+                filename = f"terminal_scatterplot.png"
+                plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
+                plt.close()
+                plot_files.append(filename)
+                print(f"  Saved {filename}")
+            except Exception as e:
+                print(f"Error generating TERMINAL_SCATTER plot: {e}")
+                import traceback
+                traceback.print_exc()
+    
+    return plot_files
+
+def setup_print_capture(log_file):
+    """Sets up stdout capture to log file. Returns (original_stdout, capture_instance)."""
+    import sys, threading, json as _json
     write_lock = threading.Lock()
 
     class PrintCapture:
-        """Wraps sys.stdout to tee print() calls into the JSON log file."""
         def __init__(self, original):
             self.original = original
             self.buf = ""
-
         def write(self, text):
-            self.original.write(text)   # still show in terminal
+            self.original.write(text)
             self.buf += text
-            # Flush on newlines
             while "\n" in self.buf:
                 line, self.buf = self.buf.split("\n", 1)
                 line = line.strip()
@@ -360,18 +667,24 @@ def run_experiment_async(run_id: str, payload: dict):
                     with write_lock:
                         with open(log_file, "a") as f:
                             f.write(_json.dumps(entry) + "\n")
+        def flush(self): self.original.flush()
+        def isatty(self): return False
 
-        def flush(self):
-            self.original.flush()
-
-        def isatty(self):
-            return False
-
-    # Install the capture (thread-local would be ideal but print goes to global stdout;
-    # this is safe for a single experiment at a time)
     original_stdout = sys.stdout
     sys.stdout = PrintCapture(original_stdout)
+    return original_stdout
 
+def run_experiment_async(run_id: str, payload: dict):
+    """Run the experiment in a background thread."""
+    folder = Path("svelte-app/results") / run_id
+
+    import json as _json
+    import sys
+    import threading
+
+    log_file = folder / "experiment.log"
+
+    original_stdout = setup_print_capture(log_file)
     import logging as _logging
 
     class PrintForwardHandler(_logging.Handler):
@@ -454,6 +767,9 @@ def run_experiment_async(run_id: str, payload: dict):
         # Convert to sorted lists
         needed_solver_indices = sorted(list(needed_solver_indices))
         needed_problem_indices = sorted(list(needed_problem_indices))
+
+        solver_idx_map = {orig_idx: new_idx for new_idx, orig_idx in enumerate(needed_solver_indices)}
+        problem_idx_map = {orig_idx: new_idx for new_idx, orig_idx in enumerate(needed_problem_indices)}
         
         print(f"Running experiments for {len(needed_solver_indices)} solvers and {len(needed_problem_indices)} problems")
 
@@ -495,277 +811,47 @@ def run_experiment_async(run_id: str, payload: dict):
             )
             
             all_experiments.append(experiments_same_problem)
-
-        solver_idx_map = {orig_idx: new_idx for new_idx, orig_idx in enumerate(needed_solver_indices)}
-        problem_idx_map = {orig_idx: new_idx for new_idx, orig_idx in enumerate(needed_problem_indices)}
+            import pickle
+            with open(folder / "experiments.pkl", "wb") as f:
+                pickle.dump(all_experiments, f)
+            with open(folder / "index_maps.pkl", "wb") as f:
+                pickle.dump({
+                    "needed_solver_indices": needed_solver_indices,
+                    "needed_problem_indices": needed_problem_indices,
+                    "solver_idx_map": solver_idx_map,
+                    "problem_idx_map": problem_idx_map,
+                }, f)
         
-        # Generate plots
         print("Generating plots...")
-        plot_files = []
-        
-        from simopt.experiment_base import PlotType, plot_progress_curves, plot_terminal_progress, plot_solvability_profiles, plot_solvability_cdfs, plot_terminal_scatterplots, plot_area_scatterplots
-        for plot_cfg in plots_config:
-            plot_type_name = plot_cfg.get("plot_type", "MEAN").upper()
-            plot_params = plot_cfg.get("params", {})
-            plot_solvers = plot_cfg.get("solvers")
-            plot_problems = plot_cfg.get("problems")
+        plot_files = generate_plots(
+            plots_config=plots_config,
+            all_experiments=all_experiments,
+            needed_solver_indices=needed_solver_indices,
+            needed_problem_indices=needed_problem_indices,
+            solver_idx_map=solver_idx_map,
+            problem_idx_map=problem_idx_map,
+            solvers_config=solvers_config,
+            problems_config=problems_config,
+            folder=folder,
+        )
             
-            # Map selected indices to experiment array positions
-            if plot_solvers:
-                plot_solver_abbrs = [SOLVER_FULL_TO_ABBR.get(s, s) for s in plot_solvers]
-                orig_solver_indices = [i for i, s in enumerate(solvers_config) if s["name"] in plot_solver_abbrs]
-                solver_exp_indices = [solver_idx_map[i] for i in orig_solver_indices]
-            else:
-                solver_exp_indices = list(range(len(needed_solver_indices)))
-            
-            if plot_problems:
-                plot_problem_abbrs = [PROBLEM_FULL_TO_ABBR.get(p, p) for p in plot_problems]
-                orig_problem_indices = [i for i, p in enumerate(problems_config) if p["name"] in plot_problem_abbrs]
-                problem_exp_indices = [problem_idx_map[i] for i in orig_problem_indices]
-            else:
-                problem_exp_indices = list(range(len(needed_problem_indices)))
-            
-            if not solver_exp_indices or not problem_exp_indices:
-                continue
-                        
-            if plot_type_name in ["ALL", "MEAN", "QUANTILE"]:
-                # Generate progress curves for each problem
-                for exp_prob_idx in problem_exp_indices:
-                    try:
-                        plt.figure(figsize=(10, 6))
+        config_to_save = {
+            "problems": [
+                {"name": p["name"],
+                 "fixed_factors": p.get("fixed_factors", {}),
+                 "model_fixed_factors": p.get("model_fixed_factors", {})}
+                for p in problems_config
+            ],
+            "solvers": [
+                {"name": s["name"],
+                 "fixed_factors": s.get("fixed_factors", {})}
+                for s in solvers_config
+            ],
+            "experiment_params": exp_params,
+        }
+        with open(folder / "experiment_config.json", "w") as f:
+            _json.dump(config_to_save, f)
 
-                        all_in_one = plot_params.get("all_in_one", True)
-                        normalize = plot_params.get("normalize", False)
-
-                        plot_type_map = {
-                            "ALL": PlotType.ALL,
-                            "MEAN": PlotType.MEAN,
-                            "QUANTILE": PlotType.QUANTILE,
-                        }
-                        plot_type_enum = plot_type_map.get(plot_type_name, PlotType.MEAN)
-
-                        plot_progress_curves(
-                            [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices],
-                            plot_type=plot_type_enum,
-                            all_in_one=all_in_one,
-                            normalize=normalize,
-                        )
-                        actual_prob_idx = needed_problem_indices[exp_prob_idx]
-                        filename = f"{plot_type_name.lower()}_progress_curves_problem_{actual_prob_idx+1}.png"
-                        plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
-                        plt.close()
-                        plot_files.append(filename)
-                        print(f"  Saved {filename}")
-                    except Exception as e:
-                        print(f"Error generating {plot_type_name} plot for problem {i+1}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        continue
-            
-            elif plot_type_name in ["VIOLIN", "BOX"]:
-                # Generate terminal progress plots (BOX or VIOLIN) for each problem
-                for exp_prob_idx in problem_exp_indices:
-                    try:
-                        plt.figure(figsize=(10, 6))
-                        
-                        # Extract parameters with defaults
-                        normalize = plot_params.get("normalize", True)
-                        all_in_one = plot_params.get("all_in_one", True)
-                        
-                        # Determine which PlotType to use
-                        plot_type_enum = PlotType.VIOLIN if plot_type_name == "VIOLIN" else PlotType.BOX
-                        
-                        plot_terminal_progress(
-                            [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices],
-                            plot_type=plot_type_enum,
-                            normalize=normalize,
-                            all_in_one=all_in_one,
-                        )
-                        actual_prob_idx = needed_problem_indices[exp_prob_idx]
-                        filename = f"{plot_type_name.lower()}_progress_curves_problem_{actual_prob_idx+1}.png"
-                        plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
-                        plt.close()
-                        plot_files.append(filename)
-                        print(f"  Saved {filename}")
-                    except Exception as e:
-                        print(f"Error generating {plot_type_name} plot for problem {i+1}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        continue
-
-            elif plot_type_name in ["AREA", "AREA_MEAN", "AREA_STD_DEV"]:
-                # Generate area scatterplots for each problem
-                if len(problem_exp_indices) < 2:
-                    print(f"Warning: {plot_type_name} requires multiple problems. Skipping.")
-                    continue
-                try:
-                    print(f"Generating {plot_type_name} plot...")
-                    plt.figure(figsize=(10, 6))
-                    # Extract parameters with defaults
-                    all_in_one = plot_params.get("all_in_one", True)
-                    n_bootstraps = plot_params.get("n_bootstraps", 100)
-                    conf_level = plot_params.get("conf_level", 0.95)
-                    plot_conf_ints = plot_params.get("plot_conf_ints", True)
-                    print_max_hw = plot_params.get("print_max_hw", True)
-                    solver_set_name = plot_params.get("solver_set_name", "SOLVER_SET")
-                    problem_set_name = plot_params.get("problem_set_name", "PROBLEM_SET")
-
-                    plot_type_map = {
-                        "AREA": PlotType.AREA,
-                        "AREA_MEAN": PlotType.AREA_MEAN,
-                        "AREA_STD_DEV": PlotType.AREA_STD_DEV
-                    }
-                    plot_type_enum = plot_type_map.get(plot_type_name)
-
-                    filtered_experiments = [
-                        [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices]
-                        for exp_prob_idx in problem_exp_indices]   
-                                        
-                    plot_area_scatterplots(
-                        filtered_experiments,
-                        all_in_one=all_in_one,
-                        n_bootstraps=n_bootstraps,
-                        conf_level=conf_level,
-                        plot_conf_ints=plot_conf_ints,
-                        print_max_hw=print_max_hw,
-                        solver_set_name=solver_set_name,
-                        problem_set_name=problem_set_name,
-                    )
-                    filename = f"{plot_type_name.lower()}_area_scatterplot.png"
-                    plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
-                    plt.close()
-                    plot_files.append(filename)
-                    print(f"  Saved {filename}")
-                except Exception as e:
-                    print(f"Error generating {plot_type_name} plot: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-            elif plot_type_name in ["CDF_SOLVABILITY", "QUANTILE_SOLVABILITY", "DIFFERENCE_OF_CDF_SOLVABILITY", "DIFFERENCE_OF_QUANTILE_SOLVABILITY"]:
-                # Solvability profiles require multiple problems
-                if len(problem_exp_indices) < 2:
-                    print(f"Warning: {plot_type_name} requires multiple problems. Skipping.")
-                    continue
-                try:
-                    print(f"Generating {plot_type_name} plot...")
-                    plt.figure(figsize=(10, 6))
-                    # Extract parameters with defaults
-                    all_in_one = plot_params.get("all_in_one", True)
-                    n_bootstraps = plot_params.get("n_bootstraps", 100)
-                    conf_level = plot_params.get("conf_level", 0.95)
-                    plot_conf_ints = plot_params.get("plot_conf_ints", False)  # Disabled by default
-                    print_max_hw = plot_params.get("print_max_hw", False)
-                    solve_tol = plot_params.get("solve_tol", 0.1)
-                    beta = plot_params.get("beta", 0.5)
-                    ref_solver = plot_params.get("ref_solver", None)
-                    solver_set_name = plot_params.get("solver_set_name", "SOLVER_SET")
-                    problem_set_name = plot_params.get("problem_set_name", "PROBLEM_SET")
-                    # Map plot type name to PlotType enum
-                    plot_type_map = {
-                        "CDF_SOLVABILITY": PlotType.CDF_SOLVABILITY,
-                        "QUANTILE_SOLVABILITY": PlotType.QUANTILE_SOLVABILITY,
-                        "DIFFERENCE_OF_CDF_SOLVABILITY": PlotType.DIFFERENCE_OF_CDF_SOLVABILITY,
-                        "DIFFERENCE_OF_QUANTILE_SOLVABILITY": PlotType.DIFFERENCE_OF_QUANTILE_SOLVABILITY,
-                    }
-                    plot_type_enum = plot_type_map.get(plot_type_name)
-
-                    filtered_experiments = [
-                        [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices]
-                        for exp_prob_idx in problem_exp_indices]   
-                                        
-                    plot_solvability_profiles(
-                        filtered_experiments,
-                        plot_type=plot_type_enum,
-                        all_in_one=all_in_one,
-                        n_bootstraps=n_bootstraps,
-                        conf_level=conf_level,
-                        plot_conf_ints=plot_conf_ints,
-                        print_max_hw=print_max_hw,
-                        solve_tol=solve_tol,
-                        beta=beta,
-                        ref_solver=ref_solver,
-                        solver_set_name=solver_set_name,
-                        problem_set_name=problem_set_name,
-                    )
-                    filename = f"{plot_type_name.lower()}_solvability_profile.png"
-                    plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
-                    plt.close()
-                    plot_files.append(filename)
-                    print(f"  Saved {filename}")
-                except Exception as e:
-                    print(f"Error generating {plot_type_name} plot: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-            elif plot_type_name == "SOLVE_TIME_CDF":
-                # Generate solvability CDF plots for each problem
-                for exp_prob_idx in problem_exp_indices:
-                    try:
-                        plt.figure(figsize=(10, 6))
-                        
-                        # Extract parameters with defaults
-                        solve_tol = plot_params.get("solve_tol", 0.1)
-                        all_in_one = plot_params.get("all_in_one", True)
-                        n_bootstraps = plot_params.get("n_bootstraps", 100)
-                        conf_level = plot_params.get("conf_level", 0.95)
-                        plot_conf_ints = plot_params.get("plot_conf_ints", False)  # Disabled by default to avoid bootstrap errors
-                        print_max_hw = plot_params.get("print_max_hw", False)
-                                                
-                        plot_solvability_cdfs(
-                            [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices],
-                            solve_tol=solve_tol,
-                            all_in_one=all_in_one,
-                            n_bootstraps=n_bootstraps,
-                            conf_level=conf_level,
-                            plot_conf_ints=plot_conf_ints,
-                            print_max_hw=print_max_hw,
-                        )
-                        filename = f"solvability_cdf_problem_{i+1}.png"
-                        plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
-                        plt.close()
-                        plot_files.append(filename)
-                        print(f"  Saved {filename}")
-                    except Exception as e:
-                        print(f"Error generating SOLVE_TIME_CDF plot for problem {i+1}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        continue
-
-            elif plot_type_name == "TERMINAL_SCATTER":
-                # Generate terminal scatterplot (requires multiple problems)
-                if len(problem_exp_indices) < 2:
-                    print("Warning: TERMINAL_SCATTER requires multiple problems. Skipping.")
-                    continue
-                    
-                try:
-                    print(f"Generating TERMINAL_SCATTER plot...")
-                    plt.figure(figsize=(10, 6))
-                    
-                    # Extract parameters with defaults
-                    all_in_one = plot_params.get("all_in_one", True)
-                    solver_set_name = plot_params.get("solver_set_name", "SOLVER_SET")
-                    problem_set_name = plot_params.get("problem_set_name", "PROBLEM_SET")
-
-                    filtered_experiments = [
-                        [all_experiments[exp_prob_idx][exp_solver_idx] for exp_solver_idx in solver_exp_indices]
-                        for exp_prob_idx in problem_exp_indices]   
-                            
-                    plot_terminal_scatterplots(
-                        filtered_experiments,
-                        all_in_one=all_in_one,
-                        solver_set_name=solver_set_name,
-                        problem_set_name=problem_set_name,
-                    )
-                    filename = f"terminal_scatterplot.png"
-                    plt.savefig(folder / filename, dpi=150, bbox_inches='tight')
-                    plt.close()
-                    plot_files.append(filename)
-                    print(f"  Saved {filename}")
-                except Exception as e:
-                    print(f"Error generating TERMINAL_SCATTER plot: {e}")
-                    import traceback
-                    traceback.print_exc()
-        
         # Create final results page with plots
         update_status(folder, "Complete!", plot_files)
         print(f"Experiment {run_id} completed successfully!")
@@ -1306,32 +1392,92 @@ def update_status(folder: Path, status: str, plot_files: list = None):
         f.write(html_content)
 
 
+def run_plots_only(run_id: str, payload: dict):
+    """Regenerate plots only using saved experiment objects."""
+    import pickle
+    import json
+
+    folder = Path("svelte-app/results") / run_id
+
+    # Same PrintCapture setup as run_experiment_async
+    import sys, threading as _threading
+    import json as _json
+    log_file = folder / "experiment.log"
+
+    original_stdout = setup_print_capture(log_file)
+
+    try:
+        print("Reusing existing experiment results, generating new plots only...")
+        update_status(folder, "Generating plots...")
+
+        with open(folder / "experiments.pkl", "rb") as f:
+            all_experiments = pickle.load(f)
+        with open(folder / "index_maps.pkl", "rb") as f:
+            maps = pickle.load(f)
+
+        needed_solver_indices = maps["needed_solver_indices"]
+        needed_problem_indices = maps["needed_problem_indices"]
+        solver_idx_map = maps["solver_idx_map"]
+        problem_idx_map = maps["problem_idx_map"]
+
+        plot_files = []
+
+        plots_config = payload.get("plots", [])
+        solvers_config = payload.get("solvers", [])
+        problems_config = payload.get("problems", [])
+
+        # Convert display names
+        for solver_cfg in solvers_config:
+            solver_cfg["name"] = SOLVER_FULL_TO_ABBR.get(solver_cfg["name"], solver_cfg["name"])
+        for prob_cfg in problems_config:
+            prob_cfg["name"] = PROBLEM_FULL_TO_ABBR.get(prob_cfg["name"], prob_cfg["name"])
+
+        plot_files = generate_plots(
+            plots_config=plots_config,
+            all_experiments=all_experiments,
+            needed_solver_indices=needed_solver_indices,
+            needed_problem_indices=needed_problem_indices,
+            solver_idx_map=solver_idx_map,
+            problem_idx_map=problem_idx_map,
+            solvers_config=solvers_config,
+            problems_config=problems_config,
+            folder=folder,
+        )
+
+        update_status(folder, "Complete!", plot_files)
+        print("Plots generated successfully!")
+
+    except Exception as e:
+        print(f"Error generating plots: {e}")
+        import traceback
+        traceback.print_exc()
+        update_status(folder, f"Error: {str(e)}")
+    finally:
+        sys.stdout = original_stdout
+
 @app.post("/api/run")
 def run_experiment(payload: dict = Body(...)):
     from datetime import datetime
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    folder = Path("svelte-app/results") / run_id
-    folder.mkdir(parents=True, exist_ok=True)
-    
-    # Log the payload for debugging
-    print("\n" + "="*60)
-    print("RECEIVED EXPERIMENT REQUEST")
-    print("="*60)
-    print(f"Experiment ID: {run_id}")
-    print(f"\nSolvers: {[s['name'] for s in payload.get('solvers', [])]}")
-    print(f"Problems: {[p['name'] for p in payload.get('problems', [])]}")
-    print("="*60 + "\n")
-    
-    # Create initial status page
-    update_status(folder, "Initializing...")
-    
-    # Start experiment in background thread
-    thread = threading.Thread(target=run_experiment_async, args=(run_id, payload))
-    thread.daemon = True
-    thread.start()
-    
-    return {"id": run_id}
 
+    needs_rerun = _check_rerun_logic(payload)
+
+    if needs_rerun:
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder = Path("svelte-app/results") / run_id
+        folder.mkdir(parents=True, exist_ok=True)
+        update_status(folder, "Initializing...")
+        thread = threading.Thread(target=run_experiment_async, args=(run_id, payload))
+        thread.daemon = True
+        thread.start()
+    else:
+        run_id = payload.get("last_run_id")
+        folder = Path("svelte-app/results") / run_id
+        print(f"Skipping rerun, generating plots only for {run_id}")
+        thread = threading.Thread(target=run_plots_only, args=(run_id, payload))
+        thread.daemon = True
+        thread.start()
+
+    return {"id": run_id}
 
 @app.get("/api/results/{experiment_id}")
 def get_results(experiment_id: str):

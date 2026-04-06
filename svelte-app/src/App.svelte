@@ -33,6 +33,8 @@
   let selectedPlotSolvers = []; // Array of solver names selected for this plot
   let selectedPlotProblems = []; // Array of problem names selected for this plot
 
+  let lastRunId = null;
+
   function toDisplayString(val) {
     if (val === null || val === undefined) return "";
     if (typeof val === "string") return val;
@@ -257,6 +259,7 @@
 
     // Build the experiment payload
     const payload = {
+      last_run_id: lastRunId,
       experiment_params: {
         num_macroreps: macroreps,
         num_postreps: prValues.num_post_reps || 100,
@@ -306,6 +309,7 @@
       }
 
       const data = await res.json();
+      lastRunId = data.id;
       
       // Open results page in new window
       window.open(`/results/${data.id}/index.html`, '_blank');
