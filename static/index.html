@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SimOpt Web Interface</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+    <nav>
+        <div class="nav-left">
+            <span class="title">SimOpt Web Interface</span>
+        </div>
+        <div class="nav-right">
+            <ul>
+                <li class="active" onclick="navigate('Simulator')">Simulator</li>
+                <li onclick="navigate('User Guide')">User Guide</li>
+                <li onclick="navigate('About Us')">About Us</li>
+            </ul>
+        </div>
+    </nav>
+
+    <main id="app"></main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

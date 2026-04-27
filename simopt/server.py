@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from simopt import experiment_base as eb
 import seaborn as sns
+from fastapi.responses import FileResponse, Response
 
 from simopt.directory import (
     problem_unabbreviated_directory,
@@ -52,10 +53,11 @@ class ExperimentRequest(BaseModel):
     solvers: List[SolverRequest]
     plots: List[PlotRequest]
 
+BASE_DIR = Path(__file__).parent.parent  # SIMOPT/simopt/
+RESULTS_DIR = BASE_DIR / "svelte-app" / "results"
+STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(title="SimOpt API")
-Path("results").mkdir(exist_ok=True)
-app.mount("/results", StaticFiles(directory="results"), name="results")
 
 # Allow frontend access
 app.add_middleware(
@@ -72,6 +74,33 @@ except Exception:
     POST_REPLICATE_DEFAULTS = {}
     POST_NORMALIZE_DEFAULTS = {}
 
+@app.get("/")
+def serve_frontend():
+    return FileResponse(str(STATIC_DIR / "index.html"))
+
+@app.get("/results/{run_id}/experiment.log")
+def serve_log(run_id: str):
+    path = RESULTS_DIR / run_id / "experiment.log"
+    if not path.exists():
+        return Response(content="", media_type="text/plain")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        return Response(content=content, media_type="text/plain")
+    except Exception:
+        return Response(content="", media_type="text/plain")
+
+@app.get("/results/{run_id}/index.html")
+def serve_result(run_id: str):
+    path = RESULTS_DIR / run_id / "index.html"
+    if not path.exists():
+        return Response(content="", media_type="text/html")
+    content = path.read_text(encoding="utf-8", errors="replace")
+    return Response(content=content, media_type="text/html")
+
+RESULTS_DIR.mkdir(exist_ok=True)
+app.mount("/results", StaticFiles(directory=str(RESULTS_DIR)), name="results")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 def create_name_mappings():
     """Create bidirectional mappings between abbreviated and full names."""
@@ -322,8 +351,8 @@ def _check_rerun_logic(payload: dict) -> bool:
         print("check_rerun: no last_run_id, needs rerun")
         return True
 
-    config_path = Path(f"svelte-app/results/{last_run_id}/experiment_config.json")
-    experiments_path = Path(f"svelte-app/results/{last_run_id}/experiments.pkl")
+    config_path = RESULTS_DIR / last_run_id / "experiment_config.json"
+    experiments_path = RESULTS_DIR / last_run_id / "experiments.pkl"
 
     if not config_path.exists() or not experiments_path.exists():
         print(f"check_rerun: missing files - config:{config_path.exists()} pkl:{experiments_path.exists()}")
@@ -676,7 +705,9 @@ def setup_print_capture(log_file):
 
 def run_experiment_async(run_id: str, payload: dict):
     """Run the experiment in a background thread."""
-    folder = Path("svelte-app/results") / run_id
+    folder = RESULTS_DIR / run_id
+    print(f"Results folder: {folder}")
+    print(f"Folder exists: {folder.exists()}")
 
     import json as _json
     import sys
@@ -886,7 +917,7 @@ def update_status(folder: Path, status: str, plot_files: list = None):
                     <span class="plot-label">{label}</span>
                     <button class="collapse-btn" onclick="collapsePlot('{plot_id}')" title="Minimize plot">−</button>
                 </div>
-                <img src="{plot_file}" alt="{plot_file}">
+                <img src="/results/{run_id}/{plot_file}" alt="{plot_file}">
             </div>
             """
             minimized_icons += f"""
@@ -903,7 +934,7 @@ def update_status(folder: Path, status: str, plot_files: list = None):
                 <span class="mini-label">{label}</span>
             </div>
             """
-            preview_data += f'"{plot_id}": {{"src": "{plot_file}", "label": "{label}"}},'
+            preview_data += f'"{plot_id}": {{"src": "/results/{run_id}/{plot_file}", "label": "{label}"}},'
 
         plots_html = f"""
         <div id="plots-grid">{plot_cards}</div>
@@ -916,7 +947,7 @@ def update_status(folder: Path, status: str, plot_files: list = None):
         """
 
     status_class = "success" if status == "Complete!" else ("error" if status.startswith("Error:") else "running")
-    is_running = status_class == "running"
+    is_running_js = "true" if status_class == "running" else "false"
 
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -1203,6 +1234,8 @@ def update_status(folder: Path, status: str, plot_files: list = None):
         var allLogs = [];
         var autoScroll = true;
         var lastLogCount = 0;
+        var hasReloadedAfterCompletion = false;
+        var lastCompletionDetected = false;
 
         function fetchLogs() {{
             fetch('experiment.log?t=' + Date.now())
@@ -1218,6 +1251,22 @@ def update_status(folder: Path, status: str, plot_files: list = None):
                         try {{ allLogs.push(JSON.parse(line)); }} catch(e) {{}}
                     }});
                     renderLogs();
+                    var completed = allLogs.some(function(e) {{
+                        return e.msg && (
+                            e.msg.includes("completed successfully") ||
+                            e.msg.includes("Complete!")
+                        );
+                    }});
+                    if (completed && !lastCompletionDetected) {{
+                        lastCompletionDetected = true;
+                        var reloadKey = 'reloaded_' + window.location.pathname;
+                        if (!sessionStorage.getItem(reloadKey)) {{
+                            sessionStorage.setItem(reloadKey, '1');
+                            setTimeout(function() {{
+                                window.location.reload();
+                            }}, 1200);
+                        }}
+                    }}
                 }});
         }}
 
@@ -1225,7 +1274,7 @@ def update_status(folder: Path, status: str, plot_files: list = None):
             msg = msg.replace(/(completed successfully|Complete!)/gi, '<span class="kw-success">$1</span>');
             msg = msg.replace(/(error|failed|exception)/gi, '<span class="kw-error">$1</span>');
             msg = msg.replace(/(Running|Starting|Creating|Post-replicating|Post-normalizing)/gi, '<span class="kw-running">$1</span>');
-            msg = msg.replace(/(Saved [^ ]+\.png)/gi, '<span class="kw-saved">$1</span>');
+            msg = msg.replace(/(Saved [^ ]+[.]png)/gi, '<span class="kw-saved">$1</span>');
             return msg;
         }}
 
@@ -1338,7 +1387,7 @@ def update_status(folder: Path, status: str, plot_files: list = None):
                 document.getElementById('log-chevron').classList.add('open');
             }}
             fetchLogs();
-            if (isRunning) {{
+            if ({is_running_js}) {{
                 setInterval(fetchLogs, 1500);
             }}
         }});
@@ -1397,7 +1446,7 @@ def run_plots_only(run_id: str, payload: dict):
     import pickle
     import json
 
-    folder = Path("svelte-app/results") / run_id
+    folder = RESULTS_DIR / run_id
 
     # Same PrintCapture setup as run_experiment_async
     import sys, threading as _threading
@@ -1463,7 +1512,7 @@ def run_experiment(payload: dict = Body(...)):
 
     if needs_rerun:
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        folder = Path("svelte-app/results") / run_id
+        folder = RESULTS_DIR / run_id
         folder.mkdir(parents=True, exist_ok=True)
         update_status(folder, "Initializing...")
         thread = threading.Thread(target=run_experiment_async, args=(run_id, payload))
@@ -1471,7 +1520,7 @@ def run_experiment(payload: dict = Body(...)):
         thread.start()
     else:
         run_id = payload.get("last_run_id")
-        folder = Path("svelte-app/results") / run_id
+        folder = RESULTS_DIR / run_id
         print(f"Skipping rerun, generating plots only for {run_id}")
         thread = threading.Thread(target=run_plots_only, args=(run_id, payload))
         thread.daemon = True

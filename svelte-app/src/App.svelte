@@ -55,8 +55,8 @@
 
   async function onPlotChange(name) {
     selectedPlotName = name;
+    editMode = null;
     plotParams = name ? await fetchPlotParams(name) : [];
-    // Reset selections when plot type changes
     selectedPlotSolvers = [];
     selectedPlotProblems = [];
   }
@@ -145,6 +145,7 @@
     plotParams = [];
     selectedPlotSolvers = [];
     selectedPlotProblems = [];
+    editMode = null;
   }
 
   function addPlotToSummary() {
@@ -156,9 +157,14 @@
       problems: [...selectedPlotProblems], // Copy the selected problems
       expanded: false
     };
-    summaryPlots = [...summaryPlots, entry];
-    // mirror solver/problem behavior: reset dropdown after add
-    resetPlotEditor();
+    if (editMode?.kind === 'plot') {
+        summaryPlots[editMode.index] = entry;
+        summaryPlots = [...summaryPlots];
+        resetPlotEditor();
+    } else {
+        summaryPlots = [...summaryPlots, entry];
+        resetPlotEditor();
+    }
   }
 
   const removeSummaryPlot = (i) =>
@@ -166,7 +172,8 @@
 
   function requestEdit(kind, index) {
     const occupied = (kind === 'solver'  && selectedSolverName) ||
-                     (kind === 'problem' && selectedProblemName);
+                     (kind === 'problem' && selectedProblemName) ||
+                     (kind === 'plot' && selectedPlotName);
     if (occupied) {
       confirmKind = kind;
       confirmIndex = index;
@@ -222,11 +229,22 @@
       selectedSolverName = s.name;
       solverParams = deepCopyParams(s.params);
       editMode = { kind: 'solver', index };
-    } else {
+    } else if (kind === 'problem') {
       const p = summaryProblems[index];
       selectedProblemName = p.name;
       problemParams = deepCopyParams(p.params);
       editMode = { kind: 'problem', index };
+    } else {
+        const pl = summaryPlots[index];
+        selectedPlotName = pl.name;
+        plotParams = await fetchPlotParams(pl.name);
+        plotParams = plotParams.map((p, i) => ({
+            ...p,
+            value: pl.params[i]?.value ?? p.value
+        }));
+        selectedPlotSolvers = [...(pl.solvers || [])];
+        selectedPlotProblems = [...(pl.problems || [])];
+        editMode = { kind: 'plot', index };
     }
   }
 
@@ -461,20 +479,30 @@
               <p class="param-title">Solver Parameters</p>
               {#each solverParams as param, idx}
                 <label>
-                  <div style="display:flex;align-items:center;gap:0.4rem;">
-                    <span>{param.name}</span>
-                    {#if param.description}
-                      <span class="info-wrapper" aria-hidden="true">
-                        <span class="info-icon">ℹ</span>
-                        <div class="tooltip">{param.description}</div>
-                      </span>
+                    <div style="display:flex;align-items:center;gap:0.4rem;">
+                        <span>{param.name}</span>
+                        {#if param.description}
+                            <span class="info-wrapper" aria-hidden="true">
+                                <span class="info-icon">ℹ</span>
+                                <div class="tooltip">{param.description}</div>
+                            </span>
+                        {/if}
+                    </div>
+                    {#if typeof param.default === 'boolean'}
+                        <select
+                            value={param.value}
+                            on:change={(e) => { solverParams[idx].value = e.target.value; solverParams = [...solverParams]; }}
+                        >
+                            <option value="true">True</option>
+                            <option value="false">False</option>
+                        </select>
+                    {:else}
+                        <input
+                            type="text"
+                            bind:value={param.value}
+                            on:input={(e) => (solverParams[idx].value = e.target.value)}
+                        />
                     {/if}
-                  </div>
-                  <input
-                    type="text"
-                    bind:value={param.value}
-                    on:input={(e) => (solverParams[idx].value = e.target.value)}
-                  />
                 </label>
               {/each}
             </div>
@@ -525,7 +553,7 @@
               style="margin-bottom:0.75rem;"
               on:click={addPlotToSummary}
             >
-              + Add Plot
+              {editMode?.kind === 'plot' ? 'Apply Changes' : '+ Add Plot'}
             </button>
           {/if}
 
@@ -543,20 +571,40 @@
               <p class="param-title">Plot Parameters ({selectedPlotName})</p>
               {#each plotParams as p, i}
                 <label>
-                  <div style="display:flex;align-items:center;gap:0.4rem;">
-                    <span>{p.name}</span>
-                    {#if p.description}
-                      <span class="info-wrapper" aria-hidden="true">
-                        <span class="info-icon">ℹ</span>
-                        <div class="tooltip">{p.description}</div>
-                      </span>
+                    <div style="display:flex;align-items:center;gap:0.4rem;">
+                        <span>{p.name}</span>
+                        {#if p.description}
+                            <span class="info-wrapper" aria-hidden="true">
+                                <span class="info-icon">℩</span>
+                                <div class="tooltip">{p.description}</div>
+                            </span>
+                        {/if}
+                    </div>
+                    {#if p.name === 'ref_solver'}
+                        <select
+                            value={p.value}
+                            on:change={(e) => { plotParams[i].value = e.target.value; plotParams = [...plotParams]; }}
+                        >
+                            <option value="">— None —</option>
+                            {#each summarySolvers as solver}
+                                <option value={solver.name}>{solver.name}</option>
+                            {/each}
+                        </select>
+                    {:else if typeof p.default === 'boolean'}
+                        <select
+                            value={p.value}
+                            on:change={(e) => { plotParams[i].value = e.target.value; plotParams = [...plotParams]; }}
+                        >
+                            <option value="true">True</option>
+                            <option value="false">False</option>
+                        </select>
+                    {:else}
+                        <input
+                            type="text"
+                            bind:value={p.value}
+                            on:input={(e) => (plotParams[i].value = e.target.value)}
+                        />
                     {/if}
-                  </div>
-                  <input
-                    type="text"
-                    bind:value={p.value}
-                    on:input={(e)=> (plotParams[i].value = e.target.value)}
-                  />
                 </label>
               {/each}
             </div>
@@ -632,20 +680,30 @@
               <p class="param-title">Problem Parameters</p>
               {#each problemParams as param, idx}
                 <label>
-                  <div style="display:flex;align-items:center;gap:0.4rem;">
-                    <span>{param.name}</span>
-                    {#if param.description}
-                      <span class="info-wrapper" aria-hidden="true">
-                        <span class="info-icon">ℹ</span>
-                        <div class="tooltip">{param.description}</div>
-                      </span>
+                    <div style="display:flex;align-items:center;gap:0.4rem;">
+                        <span>{param.name}</span>
+                        {#if param.description}
+                            <span class="info-wrapper" aria-hidden="true">
+                                <span class="info-icon">ℹ</span>
+                                <div class="tooltip">{param.description}</div>
+                            </span>
+                        {/if}
+                    </div>
+                    {#if typeof param.default === 'boolean'}
+                        <select
+                            value={param.value}
+                            on:change={(e) => { problemParams[idx].value = e.target.value; problemParams = [...problemParams]; }}
+                        >
+                            <option value="true">True</option>
+                            <option value="false">False</option>
+                        </select>
+                    {:else}
+                        <input
+                            type="text"
+                            bind:value={param.value}
+                            on:input={(e) => (problemParams[idx].value = e.target.value)}
+                        />
                     {/if}
-                  </div>
-                  <input
-                    type="text"
-                    bind:value={param.value}
-                    on:input={(e) => (problemParams[idx].value = e.target.value)}
-                  />
                 </label>
               {/each}
             </div>
@@ -779,17 +837,17 @@
                 </button>
 
                 {#if pl.expanded}
-                  <!-- Show params if the plot had any (e.g., MEAN) -->
                   {#if pl.params && pl.params.length}
-                    <ul class="param-list" style="margin:.5rem 0;">
-                      {#each pl.params as p}
-                        <li><strong>{p.name}:</strong> {p.value ?? p.default ?? ""}</li>
-                      {/each}
-                    </ul>
+                      <ul class="param-list" style="margin:.5rem 0;">
+                          {#each pl.params as p}
+                              <li><strong>{p.name}:</strong> {p.value ?? p.default ?? ""}</li>
+                          {/each}
+                      </ul>
                   {:else}
-                    <p style="margin:.5rem 0;color:#6b7280;">No parameters.</p>
+                      <p style="margin:.5rem 0;color:#6b7280;">No parameters.</p>
                   {/if}
-                {/if}
+                  <button class="secondary-outline" on:click={() => requestEdit('plot', i)}>Edit</button>
+              {/if}
               </div>
             {/each}
           </div>
@@ -840,11 +898,6 @@
       </div>
     </div>
 
-    <!-- === Save + Run === -->
-    <div class="card section" style="max-width:640px;">
-      <label><input type="checkbox" bind:checked={savePickle} /> Save outputs to pickle file</label>
-    </div>
-
     <div class="button-row">
       <button class="primary" on:click={runExperiment}>Run Experiment</button>
     </div>
@@ -854,7 +907,7 @@
       <div class="modal-backdrop" on:click={closeConfirm}>
         <div class="modal" on:click|stopPropagation>
           <h3>Replace current editor?</h3>
-          <p>You already have a {confirmKind === 'solver' ? 'solver' : 'problem'} open in the editor. If you continue, the current selection and any unsaved parameter changes will be replaced.</p>
+          <p>You already have a {confirmKind === 'solver' ? 'solver' : confirmKind === 'problem' ? 'problem' : 'plot'} open in the editor. If you continue, the current selection and any unsaved parameter changes will be replaced.</p>
           <div class="modal-actions">
             <button class="btn" on:click={closeConfirm}>Cancel</button>
             <button class="btn btn-primary" on:click={confirmProceed}>Replace</button>
