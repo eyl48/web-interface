@@ -322,9 +322,6 @@ window.togglePostProcess = function() { state.showPostProcess = !state.showPostP
 window.togglePostNormalize = function() { state.showPostNormalize = !state.showPostNormalize; render(); };
 
 function buildUI() {
-    if (state.currentPage !== "Simulator") {
-        return `<div class="card" style="margin-top:2rem;"><h2>${state.currentPage}</h2><p>Coming soon.</p></div>`;
-    }
 
     // Solver params
     const solverParamsHtml = state.selectedSolverName ? `

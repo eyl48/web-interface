@@ -22,30 +22,27 @@ from simopt.directory import (
 )
 from simopt.experiment_base import ProblemsSolvers, PlotProgressCurvesConfig, PlotTerminalProgressCurvesConfig, PlotSolvabilityCDFConfig, PlotTerminalScatterplotsConfig, PlotSolvabilityProfilesConfig, PlotAreaScatterplotsConfig
 
-
+# ── Pydantic request models ──
+# These define the expected shape of incoming JSON payloads for each endpoint.
 class ProblemRequest(BaseModel):
     name: str
     rename: Optional[str] = None
     fixed_factors: Dict[str, Any]
     model_fixed_factors: Dict[str, Any] = {}
 
-
 class SolverRequest(BaseModel):
     name: str
     rename: Optional[str] = None
     fixed_factors: Dict[str, Any]
 
-
 class PlotRequest(BaseModel):
     plot_type: str
     params: Dict[str, Any] = {}
-
 
 class ExperimentParams(BaseModel):
     num_macroreps: int
     num_postreps: int
     num_postnorms: int
-
 
 class ExperimentRequest(BaseModel):
     experiment_params: ExperimentParams
@@ -53,13 +50,17 @@ class ExperimentRequest(BaseModel):
     solvers: List[SolverRequest]
     plots: List[PlotRequest]
 
-BASE_DIR = Path(__file__).parent.parent  # SIMOPT/simopt/
+# ── Path configuration ──
+# BASE_DIR points to SIMOPT/simopt/ (one level above server.py's package folder).
+# All results and static files are resolved relative to this directory.
+BASE_DIR = Path(__file__).parent.parent
 RESULTS_DIR = BASE_DIR / "svelte-app" / "results"
 STATIC_DIR = BASE_DIR / "static"
 
+# ── FastAPI app setup ──
 app = FastAPI(title="SimOpt API")
 
-# Allow frontend access
+# Allow all origins so the frontend (served on the same server) can make API calls.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -68,18 +69,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Load post-replicate and post-normalize defaults from SimOpt if available.
 try:
     from simopt.experiment_base import POST_REPLICATE_DEFAULTS, POST_NORMALIZE_DEFAULTS
 except Exception:
     POST_REPLICATE_DEFAULTS = {}
     POST_NORMALIZE_DEFAULTS = {}
 
+# ── Static file serving ──
 @app.get("/")
 def serve_frontend():
+    """Serve the main frontend HTML page."""
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 @app.get("/results/{run_id}/experiment.log")
 def serve_log(run_id: str):
+    """
+    Serve experiment log file for a given run.
+    Reads the file fresh on each request to avoid Content-Length mismatches
+    that occur when the static file handler caches file size at request start
+    while the background thread is still writing to the file.
+    """
     path = RESULTS_DIR / run_id / "experiment.log"
     if not path.exists():
         return Response(content="", media_type="text/plain")
@@ -92,16 +102,24 @@ def serve_log(run_id: str):
 
 @app.get("/results/{run_id}/index.html")
 def serve_result(run_id: str):
+    """
+    Serve the results page for a given run.
+    Same rationale as serve_log — reads fresh each time to avoid
+    Content-Length errors while update_status() is still rewriting the file.
+    """
     path = RESULTS_DIR / run_id / "index.html"
     if not path.exists():
         return Response(content="", media_type="text/html")
     content = path.read_text(encoding="utf-8", errors="replace")
     return Response(content=content, media_type="text/html")
 
+# Mount static directories. Routes defined above take priority over these mounts
+# because FastAPI processes explicit routes before static mounts.
 RESULTS_DIR.mkdir(exist_ok=True)
 app.mount("/results", StaticFiles(directory=str(RESULTS_DIR)), name="results")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# ── Name mappings ──
 def create_name_mappings():
     """Create bidirectional mappings between abbreviated and full names."""
     solver_abbr_to_full = {}
@@ -129,7 +147,7 @@ def create_name_mappings():
 
 SOLVER_ABBR_TO_FULL, SOLVER_FULL_TO_ABBR, PROBLEM_ABBR_TO_FULL, PROBLEM_FULL_TO_ABBR = create_name_mappings()
 
-
+# ── Schema endpoints ──
 @app.get("/postreplicate_schema")
 def postreplicate_schema() -> Dict[str, Any]:
     """Returns a simple schema for the post-replicate form."""
@@ -162,7 +180,6 @@ def postreplicate_schema() -> Dict[str, Any]:
         ]
     }
 
-
 @app.get("/postnormalize_schema")
 def postnormalize_schema() -> Dict[str, Any]:
     """Returns a simple schema for the post-normalize form."""
@@ -188,7 +205,6 @@ def postnormalize_schema() -> Dict[str, Any]:
         ]
     }
 
-
 @app.get("/plots")
 def list_plots():
     """Returns a flat list of plot names derived from experiment_base.PlotType."""
@@ -206,7 +222,6 @@ def list_plots():
         source = "class-attrs"
 
     return {"plots": plots, "source": source}
-
 
 def extract_params_from_config(config_cls):
     """Extract parameter info (name, default, description) from a Pydantic BaseModel config."""
@@ -231,18 +246,16 @@ def extract_params_from_config(config_cls):
             )
     return params
 
-
+# ── Solver and problem info endpoints ─
 @app.get("/solvers")
 def get_solvers():
     """Return all available solvers with display names."""
     return {"solvers": list(SOLVER_ABBR_TO_FULL.values())}
 
-
 @app.get("/problems")
 def get_problems():
     """Return all available problems with display names."""
     return {"problems": list(PROBLEM_ABBR_TO_FULL.values())}
-
 
 @app.get("/solver_params/{solver_name}")
 def get_solver_params(solver_name: str):
@@ -259,11 +272,9 @@ def get_solver_params(solver_name: str):
 
     return {"parameters": params}
 
-
 @app.get("/problem_params/{problem_name}")
 def get_problem_params(problem_name: str):
     """Return parameters for both the problem and its model config (accepts display name)."""
-    # Convert display name to abbreviated name
     abbr_name = PROBLEM_FULL_TO_ABBR.get(problem_name, problem_name)
     problem_cls = problem_directory.get(abbr_name)
     if problem_cls is None:
@@ -289,7 +300,6 @@ def get_problem_params(problem_name: str):
 
     return {"parameters": params}
 
-
 @app.get("/plot_params/{plot_name}")
 def get_plot_params(plot_name: str):
     """Return parameter specs for plots that need them."""
@@ -308,7 +318,7 @@ def get_plot_params(plot_name: str):
         return {"parameters": extract_params_from_config(PlotTerminalScatterplotsConfig)}
     return {"parameters": []}
 
-
+# ── Compatibility checking ──
 @app.post("/check_compatibility")
 def check_compatibility(payload: dict):
     """Check compatibility between solvers and problems."""
@@ -344,6 +354,7 @@ def check_compatibility(payload: dict):
 
     return {"compatibility": compatibility}
 
+# ── Rerun detection ──
 def _check_rerun_logic(payload: dict) -> bool:
     """Returns True if experiment needs to rerun, False if only plots changed."""
     last_run_id = payload.get("last_run_id")
@@ -392,16 +403,7 @@ def _check_rerun_logic(payload: dict) -> bool:
 
     return not (problems_match and solvers_match and params_match)
 
-@app.get("/debug/directories")
-def debug_directories():
-    """Debug endpoint to see what's in the directories."""
-    return {
-        "solvers_display": list(SOLVER_ABBR_TO_FULL.values())[:10],
-        "problems_display": list(PROBLEM_ABBR_TO_FULL.values())[:10],
-        "solver_mapping_sample": dict(list(SOLVER_FULL_TO_ABBR.items())[:3]),
-        "problem_mapping_sample": dict(list(PROBLEM_FULL_TO_ABBR.items())[:3]),
-    }
-
+# ── Plot generation ──
 def generate_plots(plots_config, all_experiments, needed_solver_indices, needed_problem_indices, solver_idx_map, problem_idx_map, solvers_config, problems_config, folder):
     """Shared plot generation logic used by both run_experiment_async and run_plots_only."""
     from simopt.experiment_base import PlotType, plot_progress_curves, plot_terminal_progress, plot_solvability_profiles, plot_solvability_cdfs, plot_terminal_scatterplots, plot_area_scatterplots
@@ -672,6 +674,7 @@ def generate_plots(plots_config, all_experiments, needed_solver_indices, needed_
     
     return plot_files
 
+# ── Output capture ──
 def setup_print_capture(log_file):
     """Sets up stdout capture to log file. Returns (original_stdout, capture_instance)."""
     import sys, threading, json as _json
@@ -703,6 +706,7 @@ def setup_print_capture(log_file):
     sys.stdout = PrintCapture(original_stdout)
     return original_stdout
 
+# ── Experiment runner ──
 def run_experiment_async(run_id: str, payload: dict):
     """Run the experiment in a background thread."""
     folder = RESULTS_DIR / run_id
@@ -899,7 +903,7 @@ def run_experiment_async(run_id: str, payload: dict):
         root_logger.removeHandler(log_handler)
         root_logger.setLevel(original_level)
 
-
+# ── Results page generation ──
 def update_status(folder: Path, status: str, plot_files: list = None):
     """Update the results page with current status and plots."""
     run_id = folder.name
@@ -1440,7 +1444,7 @@ def update_status(folder: Path, status: str, plot_files: list = None):
     with open(folder / "index.html", "w") as f:
         f.write(html_content)
 
-
+# ── Plot-only rerun ──
 def run_plots_only(run_id: str, payload: dict):
     """Regenerate plots only using saved experiment objects."""
     import pickle
@@ -1448,7 +1452,6 @@ def run_plots_only(run_id: str, payload: dict):
 
     folder = RESULTS_DIR / run_id
 
-    # Same PrintCapture setup as run_experiment_async
     import sys, threading as _threading
     import json as _json
     log_file = folder / "experiment.log"
@@ -1504,6 +1507,7 @@ def run_plots_only(run_id: str, payload: dict):
     finally:
         sys.stdout = original_stdout
 
+# ── API endpoints ──
 @app.post("/api/run")
 def run_experiment(payload: dict = Body(...)):
     from datetime import datetime
